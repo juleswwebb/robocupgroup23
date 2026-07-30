@@ -47,4 +47,11 @@
 #define IR2_PIN A8
 #define IR3_PIN A9
 
+// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54). This exact
+// pairing (30/31, 32/33) matches the previous year's working robot.
+#define ULTRASONIC0_TRIG_PIN 30
+#define ULTRASONIC0_ECHO_PIN 31
+#define ULTRASONIC1_TRIG_PIN 32
+#define ULTRASONIC1_ECHO_PIN 33
+
 #endif /* SENSOR_CONFIG_H_ */

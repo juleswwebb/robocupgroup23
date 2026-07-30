@@ -11,6 +11,9 @@ void read_ultrasonic(/* Parameters */);
 // Read infrared value
 void read_infrared(/* Parameters */);
 
+// Bring up the colour sensor. Call once from setup().
+void sensors_colour_init(void);
+
 void read_colour(/* Parameters */);
 
 // Pass in data and average the lot

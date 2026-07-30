@@ -22,6 +22,11 @@ void distance_sensors_update();
 // Print every sensor's name + latest reading to Serial. For debugging.
 void distance_sensors_print();
 
+// Print the 8x8 array's full 64-pixel grid (row by row, mm) to Serial.
+// The generic distance_sensors_print() above only shows one pixel per
+// sensor, which isn't enough to see what this sensor's actually seeing.
+void distance_sensors_print_8x8_grid();
+
 // Fetch any sensor by the name it was registered with, e.g. "tof_L0_0".
 // Returns nullptr if no sensor has that name.
 DistanceSensor* distance_sensor_get(const char* name);

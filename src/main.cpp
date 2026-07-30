@@ -30,7 +30,7 @@
 // ALL OF THESE VALUES WILL NEED TO BE SET TO SOMETHING USEFUL !!!!!!!!!!!!!!!!!!!!
 #define US_READ_TASK_PERIOD                 40
 #define IR_READ_TASK_PERIOD                 40
-#define COLOUR_READ_TASK_PERIOD             40
+#define COLOUR_READ_TASK_PERIOD             60 // must be >= the sensor's integration time (50ms), see ColourSensor.h
 #define SENSOR_AVERAGE_PERIOD               40
 #define SET_MOTOR_TASK_PERIOD               40
 #define WEIGHT_SCAN_TASK_PERIOD             40
@@ -40,6 +40,7 @@
 #define UNLOAD_WEIGHTS_TASK_PERIOD          40
 #define DISTANCE_SENSORS_UPDATE_PERIOD       20
 #define DISTANCE_SENSORS_PRINT_PERIOD       200
+#define DISTANCE_SENSORS_PRINT_8X8_PERIOD  1000
 
 // Task execution amount definitions
 // -1 means indefinitely
@@ -92,6 +93,7 @@ Task tUnload_weights(UNLOAD_WEIGHTS_TASK_PERIOD, UNLOAD_WEIGHTS_TASK_NUM_EXECUTE
 // Tasks for the TOF sensor subsystem (see DistanceSensors.h/.cpp)
 Task tUpdate_distance_sensors(DISTANCE_SENSORS_UPDATE_PERIOD, DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_update);
 Task tPrint_distance_sensors(DISTANCE_SENSORS_PRINT_PERIOD,   DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_print);
+Task tPrint_8x8_grid(DISTANCE_SENSORS_PRINT_8X8_PERIOD,       DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_print_8x8_grid);
 
 Scheduler taskManager;
 
@@ -110,6 +112,7 @@ void setup() {
   pin_init();
   robot_init();
   distance_sensors_init(); // brings up Wire + all TOF sensors
+  sensors_colour_init();   // brings up Wire1 colour sensor
   task_init();
 }
 
@@ -148,7 +151,7 @@ void task_init() {
   // module gets implemented for real.
   // taskManager.addTask(tRead_ultrasonic);
   // taskManager.addTask(tRead_infrared);
-  // taskManager.addTask(tRead_colour);
+  taskManager.addTask(tRead_colour);
   // taskManager.addTask(tSensor_average);
   // taskManager.addTask(tSet_motor);
   // taskManager.addTask(tWeight_scan);
@@ -158,6 +161,7 @@ void task_init() {
   // taskManager.addTask(tUnload_weights);
   taskManager.addTask(tUpdate_distance_sensors);
   taskManager.addTask(tPrint_distance_sensors);
+  taskManager.addTask(tPrint_8x8_grid);
 
   // Enable the tasks
   taskManager.enableAll();

@@ -5,6 +5,7 @@
 #include "sensors/MatrixLidarSensor.h"
 #include "sensors/SerialTofSensor.h"
 #include "sensors/IRDistanceSensor.h"
+#include "sensors/UltrasonicSensor.h"
 #include "sensors/SensorManager.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -31,6 +32,9 @@ static IRDistanceSensor ir1("ir_1", IR1_PIN);
 static IRDistanceSensor ir2("ir_2", IR2_PIN);
 static IRDistanceSensor ir3("ir_3", IR3_PIN);
 
+static UltrasonicSensor ultrasonic0("ultrasonic_0", ULTRASONIC0_TRIG_PIN, ULTRASONIC0_ECHO_PIN);
+static UltrasonicSensor ultrasonic1("ultrasonic_1", ULTRASONIC1_TRIG_PIN, ULTRASONIC1_ECHO_PIN);
+
 static SensorManager sensorManager;
 
 void distance_sensors_init() {
@@ -56,6 +60,8 @@ void distance_sensors_init() {
     sensorManager.addSensor(&ir1);
     sensorManager.addSensor(&ir2);
     sensorManager.addSensor(&ir3);
+    sensorManager.addSensor(&ultrasonic0);
+    sensorManager.addSensor(&ultrasonic1);
 
     if (!sensorManager.beginAll()) {
         Serial.println("distance_sensors_init: one or more sensors failed to initialise");
@@ -84,4 +90,18 @@ void distance_sensors_print() {
 
 DistanceSensor* distance_sensor_get(const char* name) {
     return sensorManager.get(name);
+}
+
+void distance_sensors_print_8x8_grid() {
+    uint16_t grid[MATRIX_LIDAR_GRID_SIZE];
+    tof8x8.getGrid(grid);
+
+    Serial.println("tof_8x8 grid (mm):");
+    for (uint8_t row = 0; row < 8; row++) {
+        for (uint8_t col = 0; col < 8; col++) {
+            Serial.print(grid[row * 8 + col]);
+            Serial.print("\t");
+        }
+        Serial.println();
+    }
 }

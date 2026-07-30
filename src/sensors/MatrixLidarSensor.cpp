@@ -6,22 +6,24 @@ MatrixLidarSensor::MatrixLidarSensor(const char* name, uint8_t address, TwoWire*
     : name_(name), sensor_(address, bus) {}
 
 bool MatrixLidarSensor::begin() {
-    if (sensor_.begin() != 0) {
-        Serial.print("8x8 TOF array '");
-        Serial.print(name_);
-        Serial.println("' failed to initialise (check wiring/address/bus)");
-        initialized_ = false;
-        return false;
+    // By the time this runs, several other sensors on other buses have
+    // already gone through their own bring-up sequence; a transient bus
+    // hiccup can make the very first attempt fail even though the sensor
+    // is fine, so retry a few times before giving up for good.
+    const uint8_t maxAttempts = 5;
+    for (uint8_t attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (sensor_.begin() == 0 && sensor_.setRangingMode(eMatrix_8X8) == 0) {
+            initialized_ = true;
+            return true;
+        }
+        delay(20);
     }
-    if (sensor_.setRangingMode(eMatrix_8X8) != 0) {
-        Serial.print("8x8 TOF array '");
-        Serial.print(name_);
-        Serial.println("' failed to set ranging mode");
-        initialized_ = false;
-        return false;
-    }
-    initialized_ = true;
-    return true;
+
+    Serial.print("8x8 TOF array '");
+    Serial.print(name_);
+    Serial.println("' failed to initialise after retries (check wiring/address/bus)");
+    initialized_ = false;
+    return false;
 }
 
 void MatrixLidarSensor::update() {
