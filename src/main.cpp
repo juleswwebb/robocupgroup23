@@ -20,6 +20,7 @@
 #include "sensors.h"
 #include "weight_collection.h"
 #include "return_to_base.h"
+#include "DistanceSensors.h"
 
 //**********************************************************************************
 // Local Definitions
@@ -37,6 +38,8 @@
 #define RETURN_TO_BASE_TASK_PERIOD          40
 #define DETECT_BASE_TASK_PERIOD             40
 #define UNLOAD_WEIGHTS_TASK_PERIOD          40
+#define DISTANCE_SENSORS_UPDATE_PERIOD       20
+#define DISTANCE_SENSORS_PRINT_PERIOD       200
 
 // Task execution amount definitions
 // -1 means indefinitely
@@ -50,6 +53,7 @@
 #define RETURN_TO_BASE_TASK_NUM_EXECUTE    -1
 #define DETECT_BASE_TASK_NUM_EXECUTE       -1
 #define UNLOAD_WEIGHTS_TASK_NUM_EXECUTE    -1
+#define DISTANCE_SENSORS_NUM_EXECUTE       -1
 
 // Pin definitions
 #define IO_POWER  49
@@ -85,6 +89,10 @@ Task tReturn_to_base(RETURN_TO_BASE_TASK_PERIOD, RETURN_TO_BASE_TASK_NUM_EXECUTE
 Task tDetect_base(DETECT_BASE_TASK_PERIOD,       DETECT_BASE_TASK_NUM_EXECUTE,    &detect_base);
 Task tUnload_weights(UNLOAD_WEIGHTS_TASK_PERIOD, UNLOAD_WEIGHTS_TASK_NUM_EXECUTE, &unload_weights);
 
+// Tasks for the TOF sensor subsystem (see DistanceSensors.h/.cpp)
+Task tUpdate_distance_sensors(DISTANCE_SENSORS_UPDATE_PERIOD, DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_update);
+Task tPrint_distance_sensors(DISTANCE_SENSORS_PRINT_PERIOD,   DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_print);
+
 Scheduler taskManager;
 
 //**********************************************************************************
@@ -101,8 +109,8 @@ void setup() {
   Serial.begin(BAUD_RATE);
   pin_init();
   robot_init();
+  distance_sensors_init(); // brings up Wire + all TOF sensors
   task_init();
-  Wire.begin();
 }
 
 //**********************************************************************************
@@ -132,16 +140,24 @@ void task_init() {
   taskManager.init();
 
   // Add tasks to the scheduler
-  taskManager.addTask(tRead_ultrasonic);
-  taskManager.addTask(tRead_infrared);
-  taskManager.addTask(tRead_colour);
-  taskManager.addTask(tSensor_average);
-  taskManager.addTask(tSet_motor);
-  taskManager.addTask(tWeight_scan);
-  taskManager.addTask(tCollect_weight);
-  taskManager.addTask(tReturn_to_base);
-  taskManager.addTask(tDetect_base);
-  taskManager.addTask(tUnload_weights);
+  //
+  // The stub modules (ultrasonic/infrared/colour/motors/weights/base) don't
+  // have real logic yet - just a Serial.println placeholder each - so
+  // they're left out of the scheduler for now to keep the serial monitor
+  // readable while we bring up the TOF sensors. Add them back in as each
+  // module gets implemented for real.
+  // taskManager.addTask(tRead_ultrasonic);
+  // taskManager.addTask(tRead_infrared);
+  // taskManager.addTask(tRead_colour);
+  // taskManager.addTask(tSensor_average);
+  // taskManager.addTask(tSet_motor);
+  // taskManager.addTask(tWeight_scan);
+  // taskManager.addTask(tCollect_weight);
+  // taskManager.addTask(tReturn_to_base);
+  // taskManager.addTask(tDetect_base);
+  // taskManager.addTask(tUnload_weights);
+  taskManager.addTask(tUpdate_distance_sensors);
+  taskManager.addTask(tPrint_distance_sensors);
 
   // Enable the tasks
   taskManager.enableAll();
