@@ -57,4 +57,8 @@
 // PMW3901 optical flow sensor, default SPI bus (MOSI=11, MISO=12, SCK=13).
 #define OPTICAL_FLOW_CS_PIN 10
 
+// BNO055 IMU (SEN0253 combo board) on I2C bus 1 (Wire1).
+#define IMU_I2C_ADDRESS 0x28
+#define IMU_I2C_BUS Wire1
+
 #endif /* SENSOR_CONFIG_H_ */

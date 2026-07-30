@@ -22,6 +22,7 @@
 #include "return_to_base.h"
 #include "DistanceSensors.h"
 #include "OpticalFlow.h"
+#include "IMU.h"
 
 //**********************************************************************************
 // Local Definitions
@@ -44,6 +45,8 @@
 #define DISTANCE_SENSORS_PRINT_8X8_PERIOD  1000
 #define OPTICAL_FLOW_UPDATE_PERIOD           20
 #define OPTICAL_FLOW_PRINT_PERIOD           200
+#define IMU_UPDATE_PERIOD                    20
+#define IMU_PRINT_PERIOD                    200
 
 // Task execution amount definitions
 // -1 means indefinitely
@@ -59,6 +62,7 @@
 #define UNLOAD_WEIGHTS_TASK_NUM_EXECUTE    -1
 #define DISTANCE_SENSORS_NUM_EXECUTE       -1
 #define OPTICAL_FLOW_NUM_EXECUTE           -1
+#define IMU_NUM_EXECUTE                    -1
 
 // Pin definitions
 #define IO_POWER  49
@@ -103,6 +107,10 @@ Task tPrint_8x8_grid(DISTANCE_SENSORS_PRINT_8X8_PERIOD,       DISTANCE_SENSORS_N
 Task tUpdate_optical_flow(OPTICAL_FLOW_UPDATE_PERIOD, OPTICAL_FLOW_NUM_EXECUTE, &optical_flow_update);
 Task tPrint_optical_flow(OPTICAL_FLOW_PRINT_PERIOD,   OPTICAL_FLOW_NUM_EXECUTE, &optical_flow_print);
 
+// Tasks for the IMU (see IMU.h/.cpp)
+Task tUpdate_imu(IMU_UPDATE_PERIOD, IMU_NUM_EXECUTE, &imu_update);
+Task tPrint_imu(IMU_PRINT_PERIOD,   IMU_NUM_EXECUTE, &imu_print);
+
 Scheduler taskManager;
 
 //**********************************************************************************
@@ -122,6 +130,7 @@ void setup() {
   distance_sensors_init(); // brings up Wire + all TOF sensors
   sensors_colour_init();   // brings up Wire1 colour sensor
   optical_flow_init();     // brings up SPI + the optical flow sensor
+  imu_init();              // brings up the Wire1 IMU (BNO055)
   task_init();
 }
 
@@ -173,6 +182,8 @@ void task_init() {
   taskManager.addTask(tPrint_8x8_grid);
   taskManager.addTask(tUpdate_optical_flow);
   taskManager.addTask(tPrint_optical_flow);
+  taskManager.addTask(tUpdate_imu);
+  taskManager.addTask(tPrint_imu);
 
   // Enable the tasks
   taskManager.enableAll();
