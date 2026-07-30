@@ -23,6 +23,7 @@
 #include "DistanceSensors.h"
 #include "OpticalFlow.h"
 #include "IMU.h"
+#include "Inductive.h"
 
 //**********************************************************************************
 // Local Definitions
@@ -47,6 +48,8 @@
 #define OPTICAL_FLOW_PRINT_PERIOD           200
 #define IMU_UPDATE_PERIOD                    20
 #define IMU_PRINT_PERIOD                    200
+#define INDUCTIVE_UPDATE_PERIOD              20
+#define INDUCTIVE_PRINT_PERIOD              200
 
 // Task execution amount definitions
 // -1 means indefinitely
@@ -63,6 +66,7 @@
 #define DISTANCE_SENSORS_NUM_EXECUTE       -1
 #define OPTICAL_FLOW_NUM_EXECUTE           -1
 #define IMU_NUM_EXECUTE                    -1
+#define INDUCTIVE_NUM_EXECUTE              -1
 
 // Pin definitions
 #define IO_POWER  49
@@ -111,6 +115,10 @@ Task tPrint_optical_flow(OPTICAL_FLOW_PRINT_PERIOD,   OPTICAL_FLOW_NUM_EXECUTE, 
 Task tUpdate_imu(IMU_UPDATE_PERIOD, IMU_NUM_EXECUTE, &imu_update);
 Task tPrint_imu(IMU_PRINT_PERIOD,   IMU_NUM_EXECUTE, &imu_print);
 
+// Tasks for the inductive proximity sensor (see Inductive.h/.cpp)
+Task tUpdate_inductive(INDUCTIVE_UPDATE_PERIOD, INDUCTIVE_NUM_EXECUTE, &inductive_update);
+Task tPrint_inductive(INDUCTIVE_PRINT_PERIOD,   INDUCTIVE_NUM_EXECUTE, &inductive_print);
+
 Scheduler taskManager;
 
 //**********************************************************************************
@@ -131,6 +139,7 @@ void setup() {
   sensors_colour_init();   // brings up Wire1 colour sensor
   optical_flow_init();     // brings up SPI + the optical flow sensor
   imu_init();              // brings up the Wire1 IMU (BNO055)
+  inductive_init();        // brings up the inductive proximity sensor pin
   task_init();
 }
 
@@ -184,6 +193,8 @@ void task_init() {
   taskManager.addTask(tPrint_optical_flow);
   taskManager.addTask(tUpdate_imu);
   taskManager.addTask(tPrint_imu);
+  taskManager.addTask(tUpdate_inductive);
+  taskManager.addTask(tPrint_inductive);
 
   // Enable the tasks
   taskManager.enableAll();

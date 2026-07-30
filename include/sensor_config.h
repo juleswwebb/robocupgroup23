@@ -61,4 +61,7 @@
 #define IMU_I2C_ADDRESS 0x28
 #define IMU_I2C_BUS Wire1
 
+// LJ18A3-8-Z/BY inductive proximity sensor (metal detection).
+#define INDUCTIVE_PIN A0
+
 #endif /* SENSOR_CONFIG_H_ */
