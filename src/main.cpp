@@ -21,6 +21,7 @@
 #include "weight_collection.h"
 #include "return_to_base.h"
 #include "DistanceSensors.h"
+#include "OpticalFlow.h"
 
 //**********************************************************************************
 // Local Definitions
@@ -41,6 +42,8 @@
 #define DISTANCE_SENSORS_UPDATE_PERIOD       20
 #define DISTANCE_SENSORS_PRINT_PERIOD       200
 #define DISTANCE_SENSORS_PRINT_8X8_PERIOD  1000
+#define OPTICAL_FLOW_UPDATE_PERIOD           20
+#define OPTICAL_FLOW_PRINT_PERIOD           200
 
 // Task execution amount definitions
 // -1 means indefinitely
@@ -55,6 +58,7 @@
 #define DETECT_BASE_TASK_NUM_EXECUTE       -1
 #define UNLOAD_WEIGHTS_TASK_NUM_EXECUTE    -1
 #define DISTANCE_SENSORS_NUM_EXECUTE       -1
+#define OPTICAL_FLOW_NUM_EXECUTE           -1
 
 // Pin definitions
 #define IO_POWER  49
@@ -95,6 +99,10 @@ Task tUpdate_distance_sensors(DISTANCE_SENSORS_UPDATE_PERIOD, DISTANCE_SENSORS_N
 Task tPrint_distance_sensors(DISTANCE_SENSORS_PRINT_PERIOD,   DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_print);
 Task tPrint_8x8_grid(DISTANCE_SENSORS_PRINT_8X8_PERIOD,       DISTANCE_SENSORS_NUM_EXECUTE, &distance_sensors_print_8x8_grid);
 
+// Tasks for the optical flow sensor (see OpticalFlow.h/.cpp)
+Task tUpdate_optical_flow(OPTICAL_FLOW_UPDATE_PERIOD, OPTICAL_FLOW_NUM_EXECUTE, &optical_flow_update);
+Task tPrint_optical_flow(OPTICAL_FLOW_PRINT_PERIOD,   OPTICAL_FLOW_NUM_EXECUTE, &optical_flow_print);
+
 Scheduler taskManager;
 
 //**********************************************************************************
@@ -113,6 +121,7 @@ void setup() {
   robot_init();
   distance_sensors_init(); // brings up Wire + all TOF sensors
   sensors_colour_init();   // brings up Wire1 colour sensor
+  optical_flow_init();     // brings up SPI + the optical flow sensor
   task_init();
 }
 
@@ -162,6 +171,8 @@ void task_init() {
   taskManager.addTask(tUpdate_distance_sensors);
   taskManager.addTask(tPrint_distance_sensors);
   taskManager.addTask(tPrint_8x8_grid);
+  taskManager.addTask(tUpdate_optical_flow);
+  taskManager.addTask(tPrint_optical_flow);
 
   // Enable the tasks
   taskManager.enableAll();

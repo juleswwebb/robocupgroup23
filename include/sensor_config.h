@@ -54,4 +54,7 @@
 #define ULTRASONIC1_TRIG_PIN 32
 #define ULTRASONIC1_ECHO_PIN 33
 
+// PMW3901 optical flow sensor, default SPI bus (MOSI=11, MISO=12, SCK=13).
+#define OPTICAL_FLOW_CS_PIN 10
+
 #endif /* SENSOR_CONFIG_H_ */
