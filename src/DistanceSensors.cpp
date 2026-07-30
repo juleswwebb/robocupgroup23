@@ -4,6 +4,7 @@
 #include "sensors/VL53L1XSensor.h"
 #include "sensors/MatrixLidarSensor.h"
 #include "sensors/SerialTofSensor.h"
+#include "sensors/IRDistanceSensor.h"
 #include "sensors/SensorManager.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -24,6 +25,11 @@ static VL53L0XSensor tofXshut6("tof_xshut6", &xshutExpander, XSHUT6_PIN, VL53L0X
 
 static MatrixLidarSensor tof8x8("tof_8x8", MATRIX_LIDAR_ADDR, &MATRIX_LIDAR_I2C_BUS);
 static SerialTofSensor tofSerial("tof_serial", Serial2, SERIAL_TOF_BAUD);
+
+static IRDistanceSensor ir0("ir_0", IR0_PIN);
+static IRDistanceSensor ir1("ir_1", IR1_PIN);
+static IRDistanceSensor ir2("ir_2", IR2_PIN);
+static IRDistanceSensor ir3("ir_3", IR3_PIN);
 
 static SensorManager sensorManager;
 
@@ -46,6 +52,10 @@ void distance_sensors_init() {
     sensorManager.addSensor(&tofXshut6);
     sensorManager.addSensor(&tof8x8);
     sensorManager.addSensor(&tofSerial);
+    sensorManager.addSensor(&ir0);
+    sensorManager.addSensor(&ir1);
+    sensorManager.addSensor(&ir2);
+    sensorManager.addSensor(&ir3);
 
     if (!sensorManager.beginAll()) {
         Serial.println("distance_sensors_init: one or more sensors failed to initialise");

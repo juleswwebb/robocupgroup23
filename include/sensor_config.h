@@ -2,7 +2,7 @@
 //         sensor_config.h
 //************************************
 //
-// Single source of truth for TOF sensor wiring and I2C addressing.
+// Single source of truth for distance sensor wiring and I2C addressing.
 
 #ifndef SENSOR_CONFIG_H_
 #define SENSOR_CONFIG_H_
@@ -39,5 +39,12 @@
 #define MATRIX_LIDAR_ADDR 0x33   // fixed by the DFRobot module itself
 
 #define SERIAL_TOF_BAUD 115200
+
+// 4 analog Sharp-style IR distance sensors (see IRDistanceSensor.h for the
+// distance conversion caveats).
+#define IR0_PIN A6
+#define IR1_PIN A7
+#define IR2_PIN A8
+#define IR3_PIN A9
 
 #endif /* SENSOR_CONFIG_H_ */
