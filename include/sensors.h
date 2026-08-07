@@ -16,6 +16,9 @@ void sensors_colour_init(void);
 
 void read_colour(/* Parameters */);
 
+// Print the colour sensor's latest reading to Serial. For debugging.
+void colour_print(void);
+
 // Pass in data and average the lot
 void sensor_average(/* Parameters */);
 

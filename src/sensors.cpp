@@ -29,6 +29,9 @@ void sensors_colour_init(void) {
 // Read colour sensor value
 void read_colour(/* Parameters */) {
   colourSensor.update();
+}
+
+void colour_print(void) {
   Serial.print("colour_0: R=");
   Serial.print(colourSensor.getRed());
   Serial.print(" G=");

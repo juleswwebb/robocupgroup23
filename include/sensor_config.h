@@ -64,4 +64,17 @@
 // LJ18A3-8-Z/BY inductive proximity sensor (metal detection).
 #define INDUCTIVE_PIN A0
 
+// Quadrature encoders, D2-D5. Interrupts on channel A only per encoder.
+#define ENCODER0_PIN_A 2
+#define ENCODER0_PIN_B 3
+#define ENCODER1_PIN_A 4
+#define ENCODER1_PIN_B 5
+
+// Servo test connector (labelled "SERIAL7" - D28/D29 double as Serial7
+// RX/TX, but here they're just being used as plain PWM outputs). Not sure
+// yet which of the two is actually wired to the servo signal line, so
+// both are driven identically until we confirm which one visibly moves it.
+#define SERVO_D28_PIN 28
+#define SERVO_D29_PIN 29
+
 #endif /* SENSOR_CONFIG_H_ */
