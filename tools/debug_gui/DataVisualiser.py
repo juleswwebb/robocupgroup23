@@ -35,12 +35,14 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtCore import QEvent, Qt
 from PyQt6.QtGui import QBrush, QColor, QPen
+import theme
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -70,11 +72,19 @@ class SignalSeries:
     values: np.ndarray
 
 
+def _caption(text: str) -> QLabel:
+    """A muted supporting label, as opposed to body text."""
+    label = QLabel(text)
+    label.setObjectName("hint")
+    return label
+
+
 class DataVisualiser(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Robot Data Visualiser")
-        self.resize(1600, 950)
+        self.setMinimumSize(1000, 640)
+        theme.fit_to_screen(self, preferred_width=1500, preferred_height=920)
 
         self.db_path: Path | None = None
         self.conn: sqlite3.Connection | None = None
@@ -96,7 +106,7 @@ class DataVisualiser(QMainWindow):
         self.marker_items = []
         self.anomaly_items = []
 
-        self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(width=1))
+        self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(theme.TEXT_MUTED, width=1))
         self.cursor_line.setZValue(1000)
         self.cursor_line.hide()
 
@@ -219,15 +229,27 @@ class DataVisualiser(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
+        root.setContentsMargins(12, 12, 12, 8)
+        root.setSpacing(10)
+
+        header = QGroupBox("Recording")
+        header_layout = QVBoxLayout(header)
+        header_layout.setSpacing(8)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Recording:"))
+        top.setSpacing(6)
+
+        file_label = QLabel("File")
+        file_label.setObjectName("fieldLabel")
+        top.addWidget(file_label)
+
         self.file_combo = QComboBox()
-        self.file_combo.setMinimumWidth(380)
-        top.addWidget(self.file_combo)
+        self.file_combo.setMinimumWidth(300)
+        top.addWidget(self.file_combo, 1)
 
         self.refresh_button = QPushButton("Refresh")
         self.open_button = QPushButton("Open")
+        self.open_button.setObjectName("primary")
         self.browse_button = QPushButton("Browse...")
         self.compare_button = QPushButton("Compare...")
         self.align_fault_button = QPushButton("Align Compare to First Fault")
@@ -236,14 +258,27 @@ class DataVisualiser(QMainWindow):
 
         for w in (
             self.refresh_button, self.open_button, self.browse_button,
-            self.compare_button, self.align_fault_button, self.clear_compare_button,
-            self.export_button,
         ):
             top.addWidget(w)
-        top.addStretch()
-        root.addLayout(top)
+
+        header_layout.addLayout(top)
+
+        compare_row = QHBoxLayout()
+        compare_row.setSpacing(6)
+
+        for w in (
+            self.compare_button, self.align_fault_button,
+            self.clear_compare_button, self.export_button,
+        ):
+            compare_row.addWidget(w)
+
+        compare_row.addStretch()
+        header_layout.addLayout(compare_row)
+
+        root.addWidget(header)
 
         self.summary_label = QLabel("No recording loaded")
+        self.summary_label.setObjectName("metric")
         self.summary_label.setWordWrap(True)
         root.addWidget(self.summary_label)
 
@@ -267,13 +302,23 @@ class DataVisualiser(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
 
+        # Two rows: eight buttons, four checkboxes, a search box and a
+        # combo all on one line needed well over 1900px and got clipped
+        # down to unreadable stubs on a 1440px screen.
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Search:"))
+        controls.setSpacing(6)
+
+        search_label = QLabel("Search")
+        search_label.setObjectName("fieldLabel")
+        controls.addWidget(search_label)
+
         self.signal_filter = QLineEdit()
         self.signal_filter.setPlaceholderText("drive, imu, battery...")
-        controls.addWidget(self.signal_filter)
+        self.signal_filter.setMinimumWidth(180)
+        controls.addWidget(self.signal_filter, 1)
 
         self.add_button = QPushButton("Add Selected")
+        self.add_button.setObjectName("primary")
         self.remove_button = QPushButton("Remove Plot")
         self.clear_button = QPushButton("Clear Plots")
         self.autoscale_button = QPushButton("Auto Scale")
@@ -284,9 +329,25 @@ class DataVisualiser(QMainWindow):
 
         for w in (
             self.add_button, self.remove_button, self.clear_button, self.autoscale_button,
-            self.derived_button, self.measure_button, self.anomaly_button, self.clear_anomaly_button,
         ):
             controls.addWidget(w)
+
+        layout.addLayout(controls)
+
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+
+        for w in (
+            self.derived_button, self.measure_button,
+            self.anomaly_button, self.clear_anomaly_button,
+        ):
+            tools.addWidget(w)
+
+        tools.addSpacing(10)
+
+        overlay_label = QLabel("OVERLAY")
+        overlay_label.setObjectName("fieldLabel")
+        tools.addWidget(overlay_label)
 
         self.show_faults = QCheckBox("Faults")
         self.show_faults.setChecked(True)
@@ -294,43 +355,49 @@ class DataVisualiser(QMainWindow):
         self.show_parameters = QCheckBox("Parameters")
         self.show_states = QCheckBox("States")
         for w in (self.show_faults, self.show_commands, self.show_parameters, self.show_states):
-            controls.addWidget(w)
+            tools.addWidget(w)
 
-        controls.addWidget(QLabel("X:"))
+        tools.addStretch()
+
+        x_label = QLabel("X AXIS")
+        x_label.setObjectName("fieldLabel")
+        tools.addWidget(x_label)
+
         self.x_axis_combo = QComboBox()
         self.x_axis_combo.addItem("Elapsed time", "elapsed")
         self.x_axis_combo.addItem("Robot time", "robot")
-        controls.addWidget(self.x_axis_combo)
-        layout.addLayout(controls)
+        tools.addWidget(self.x_axis_combo)
+
+        layout.addLayout(tools)
 
         split = QSplitter(Qt.Orientation.Horizontal)
 
         left = QWidget()
         ll = QVBoxLayout(left)
-        ll.addWidget(QLabel("Available numeric signals"))
+        ll.addWidget(_caption("Available numeric signals"))
         self.signal_list = QListWidget()
         self.signal_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         ll.addWidget(self.signal_list)
 
-        ll.addWidget(QLabel("Currently plotted"))
+        ll.addWidget(_caption("Currently plotted"))
         self.plotted_list = QListWidget()
         ll.addWidget(self.plotted_list)
 
-        ll.addWidget(QLabel("Cursor values"))
+        ll.addWidget(_caption("Cursor values"))
         self.cursor_table = QTableWidget(0, 2)
         self.cursor_table.setHorizontalHeaderLabels(["Signal", "Value"])
         self.cursor_table.horizontalHeader().setStretchLastSection(True)
         self.cursor_table.setMaximumHeight(220)
         ll.addWidget(self.cursor_table)
 
-        self.measure_label = QLabel("Measurement region: off")
+        self.measure_label = _caption("Measurement region: off")
         self.measure_label.setWordWrap(True)
         ll.addWidget(self.measure_label)
         left.setMaximumWidth(410)
         split.addWidget(left)
 
         self.plot_widget = pg.PlotWidget()
-        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        theme.style_plot(self.plot_widget)
         self.plot_widget.setLabel("bottom", "Elapsed time", units="s")
         self.plot_widget.setLabel("left", "Value")
         self.plot_widget.addLegend()
@@ -384,7 +451,7 @@ class DataVisualiser(QMainWindow):
         self.events_table.cellDoubleClicked.connect(self.jump_to_event)
         layout.addWidget(self.events_table)
 
-        hint = QLabel("Tip: double-click any event to centre the plot around it.")
+        hint = _caption("Tip: double-click any event to centre the plot around it.")
         layout.addWidget(hint)
         self.tabs.addTab(page, "Events")
 
@@ -543,7 +610,13 @@ class DataVisualiser(QMainWindow):
         s = self._series(name, "main")
         x = self._x_values(s, "main")
         finite = np.isfinite(x) & np.isfinite(s.values)
-        curve = self.plot_widget.plot(x[finite], s.values[finite], name=name)
+        colour = theme.plot_colour(len(self.plot_curves))
+        curve = self.plot_widget.plot(
+            x[finite],
+            s.values[finite],
+            name=name,
+            pen=pg.mkPen(colour, width=2),
+        )
         self.plot_curves[name] = curve
         self.plotted_list.addItem(name)
 
@@ -552,7 +625,7 @@ class DataVisualiser(QMainWindow):
             cx = self._x_values(cs, "compare")
             cfinite = np.isfinite(cx) & np.isfinite(cs.values)
             if cfinite.any():
-                pen = pg.mkPen(style=Qt.PenStyle.DashLine, width=2)
+                pen = pg.mkPen(colour, style=Qt.PenStyle.DashLine, width=2)
                 ccurve = self.plot_widget.plot(cx[cfinite], cs.values[cfinite], pen=pen, name=f"{name} [compare]")
                 self.compare_curves[name] = ccurve
 
@@ -684,7 +757,7 @@ class DataVisualiser(QMainWindow):
         self.highlighted_original_visible = curve.isVisible()
         self.highlighted_original_z = curve.zValue()
         curve.setVisible(True)
-        curve.setPen(pg.mkPen((0, 120, 255), width=4))
+        curve.setPen(pg.mkPen(theme.ACCENT, width=4))
         curve.setZValue(500)
 
     def restore_highlight(self):
@@ -847,19 +920,19 @@ class DataVisualiser(QMainWindow):
 
         if self.show_faults.isChecked() and self.table_exists(self.conn, "faults"):
             for elapsed, label in self.conn.execute("SELECT elapsed_s,label FROM faults ORDER BY elapsed_s"):
-                self._add_marker(float(elapsed), str(label), (255, 0, 0), width=3)
+                self._add_marker(float(elapsed), str(label), theme.DANGER, width=3)
 
         if self.show_commands.isChecked() and self.table_exists(self.conn, "commands"):
             for elapsed, name in self.conn.execute("SELECT elapsed_s,command FROM commands ORDER BY elapsed_s"):
-                self._add_marker(float(elapsed), f"CMD {name}", (0, 170, 255), style=Qt.PenStyle.DashLine)
+                self._add_marker(float(elapsed), f"CMD {name}", theme.ACCENT, style=Qt.PenStyle.DashLine)
 
         if self.show_parameters.isChecked() and self.table_exists(self.conn, "parameters"):
             for elapsed, name in self.conn.execute("SELECT elapsed_s,name FROM parameters ORDER BY elapsed_s"):
-                self._add_marker(float(elapsed), f"PARAM {name}", (255, 170, 0), style=Qt.PenStyle.DotLine)
+                self._add_marker(float(elapsed), f"PARAM {name}", theme.WARNING, style=Qt.PenStyle.DotLine)
 
         if self.show_states.isChecked() and self.table_exists(self.conn, "states"):
             for elapsed, in self.conn.execute("SELECT elapsed_s FROM states ORDER BY elapsed_s"):
-                self._add_marker(float(elapsed), "STATE", (170, 0, 255), style=Qt.PenStyle.DashDotLine)
+                self._add_marker(float(elapsed), "STATE", "#a78bfa", style=Qt.PenStyle.DashDotLine)
 
     # ------------------------------------------------------------------
     # Events
@@ -961,7 +1034,7 @@ class DataVisualiser(QMainWindow):
             for i in idx:
                 if x[i] - last < 0.05:
                     continue
-                line = pg.InfiniteLine(pos=float(x[i]), angle=90, movable=False, pen=pg.mkPen((255, 0, 255), width=1))
+                line = pg.InfiniteLine(pos=float(x[i]), angle=90, movable=False, pen=pg.mkPen(theme.WARNING, width=1))
                 line.setZValue(700)
                 self.plot_widget.addItem(line)
                 self.anomaly_items.append(line)
@@ -1053,6 +1126,8 @@ class DataVisualiser(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setApplicationName("Robot Data Visualiser")
+    theme.apply(app)
     pg.setConfigOptions(antialias=True)
     win = DataVisualiser()
     win.show()

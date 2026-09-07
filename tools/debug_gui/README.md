@@ -66,6 +66,13 @@ Parameters (Parameters tab, live-tunable):
 Adding a new signal only needs a firmware change (add it to the telemetry
 packet in `src/DebugProtocol.cpp`); the GUI discovers it automatically.
 
+## Appearance
+
+`theme.py` holds the shared dark theme - palette, Qt stylesheet, pyqtgraph
+styling, and the window sizing helper. Both GUIs import it, so a colour or
+spacing change made there lands in both. Windows size themselves to the screen
+they open on rather than assuming a large display.
+
 ## Recordings
 
 Sessions are saved as `.rdbg` files (SQLite) in `Data/`, which is gitignored —

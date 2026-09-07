@@ -21,6 +21,7 @@ Required beside this file:
 
 from __future__ import annotations
 
+import html
 import sys
 import time
 import subprocess
@@ -30,7 +31,6 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt, QSettings, QTimer
-from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -59,8 +59,22 @@ from PyQt6.QtWidgets import (
 
 import pyqtgraph as pg
 
+import theme
 from BluetoothSerial import BluetoothSerial
 from DataRecorder import DataRecorder
+
+
+
+# Log levels the firmware emits, mapped to theme colours. Anything not
+# listed falls back to plain body text.
+LOG_LEVEL_COLOURS = {
+    "ERROR": theme.DANGER,
+    "FATAL": theme.DANGER,
+    "WARN": theme.WARNING,
+    "WARNING": theme.WARNING,
+    "SYSTEM": theme.ACCENT,
+    "DEBUG": theme.TEXT_MUTED,
+}
 
 
 class ValueEditor(QWidget):
@@ -278,7 +292,12 @@ class RobotDebugGUI(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("Robot Debug Console")
-        self.resize(1500, 900)
+
+        # Sized against the actual screen rather than a fixed 1500x900,
+        # which overflowed a 1440x900 laptop display once the menu bar
+        # and dock were accounted for.
+        self.setMinimumSize(980, 620)
+        theme.fit_to_screen(self, preferred_width=1400, preferred_height=880)
 
         self.settings = QSettings(
             "RobotProject",
@@ -295,6 +314,7 @@ class RobotDebugGUI(QMainWindow):
         self.command_widgets = {}
         self.dashboard_command_widgets = {}
         self.plot_curves = {}
+        self.plot_colour_index = 0
 
         # Recording metadata / parameter snapshot support.
         self.parameter_definitions = {}
@@ -475,8 +495,10 @@ class RobotDebugGUI(QMainWindow):
         )
 
         self.recording_status.setText(
-            f"● RECORDING — {path.name}"
+            f"● REC — {path.name}"
         )
+        self.recording_status.setToolTip(str(path))
+        theme.set_pill_state(self.recording_status, "busy")
 
         self.log_fault_button.setEnabled(
             True
@@ -509,8 +531,10 @@ class RobotDebugGUI(QMainWindow):
         )
 
         self.recording_status.setText(
-            "○ NOT RECORDING"
+            "NOT RECORDING"
         )
+        self.recording_status.setToolTip("")
+        theme.set_pill_state(self.recording_status, "")
 
         self.recording_time_label.setText(
             "00:00:00"
@@ -603,46 +627,41 @@ class RobotDebugGUI(QMainWindow):
             central
         )
 
-        main_layout = QVBoxLayout(
-            central
-        )
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(12, 12, 12, 8)
+        main_layout.setSpacing(10)
 
         # --------------------------------------------------------------
-        # Connection / recording bar
+        # Header
+        #
+        # Two compact rows rather than one long one: the previous single
+        # row needed roughly 1900px of width and simply ran off the side
+        # of a 1440px-wide laptop screen.
         # --------------------------------------------------------------
 
-        connection_group = QGroupBox(
-            "Robot Connection"
-        )
+        header = QGroupBox("Connection && Session")
+        header_layout = QVBoxLayout(header)
+        header_layout.setSpacing(8)
 
-        connection_layout = QHBoxLayout(
-            connection_group
-        )
+        # ---- Row 1: link ----
 
-        connection_layout.addWidget(
-            QLabel("Port:")
-        )
+        link_row = QHBoxLayout()
+        link_row.setSpacing(8)
+
+        port_label = QLabel("Port")
+        port_label.setObjectName("fieldLabel")
+        link_row.addWidget(port_label)
 
         self.port_combo = QComboBox()
-        self.port_combo.setMinimumWidth(250)
+        self.port_combo.setMinimumWidth(210)
+        link_row.addWidget(self.port_combo)
 
-        connection_layout.addWidget(
-            self.port_combo
-        )
+        self.refresh_button = QPushButton("Refresh")
+        link_row.addWidget(self.refresh_button)
 
-        self.refresh_button = QPushButton(
-            "Refresh"
-        )
-
-        connection_layout.addWidget(
-            self.refresh_button
-        )
-
-        connection_layout.addSpacing(10)
-
-        connection_layout.addWidget(
-            QLabel("Baud:")
-        )
+        baud_label = QLabel("Baud")
+        baud_label.setObjectName("fieldLabel")
+        link_row.addWidget(baud_label)
 
         self.baud_combo = QComboBox()
 
@@ -656,166 +675,106 @@ class RobotDebugGUI(QMainWindow):
             460800,
             921600,
         ):
-            self.baud_combo.addItem(
-                str(baud),
-                baud,
-            )
+            self.baud_combo.addItem(str(baud), baud)
 
-        saved_baud = int(
-            self.settings.value(
-                "baud",
-                115200,
-            )
-        )
-
-        baud_index = (
-            self.baud_combo.findData(
-                saved_baud
-            )
-        )
+        saved_baud = int(self.settings.value("baud", 115200))
+        baud_index = self.baud_combo.findData(saved_baud)
 
         if baud_index >= 0:
-            self.baud_combo.setCurrentIndex(
-                baud_index
-            )
+            self.baud_combo.setCurrentIndex(baud_index)
 
-        connection_layout.addWidget(
-            self.baud_combo
-        )
+        link_row.addWidget(self.baud_combo)
 
-        self.connect_button = QPushButton(
-            "Connect"
-        )
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.setObjectName("primary")
+        self.connect_button.setMinimumWidth(100)
+        link_row.addWidget(self.connect_button)
 
-        self.connect_button.setMinimumWidth(
-            95
-        )
+        self.connection_status = QLabel("DISCONNECTED")
+        self.connection_status.setObjectName("statusPill")
+        theme.set_pill_state(self.connection_status, "bad")
+        link_row.addWidget(self.connection_status)
 
-        connection_layout.addWidget(
-            self.connect_button
-        )
+        link_row.addStretch()
 
-        self.connection_status = QLabel(
-            "● DISCONNECTED"
-        )
+        self.enter_debug_button = QPushButton("Enter Debug Mode")
+        self.enter_debug_button.setEnabled(False)
+        link_row.addWidget(self.enter_debug_button)
 
-        self.connection_status.setMinimumWidth(
-            145
-        )
+        self.exit_debug_button = QPushButton("Exit Debug Mode")
+        self.exit_debug_button.setEnabled(False)
+        link_row.addWidget(self.exit_debug_button)
 
-        connection_layout.addWidget(
-            self.connection_status
-        )
+        header_layout.addLayout(link_row)
 
-        connection_layout.addSpacing(10)
+        # ---- Row 2: recording ----
 
-        self.record_button = QPushButton(
-            "Start Recording"
-        )
+        session_row = QHBoxLayout()
+        session_row.setSpacing(8)
 
-        self.record_button.setMinimumWidth(
-            120
-        )
+        self.record_button = QPushButton("Start Recording")
+        self.record_button.setMinimumWidth(130)
+        self.record_button.setEnabled(False)
+        session_row.addWidget(self.record_button)
 
-        self.record_button.setEnabled(
-            False
-        )
+        self.log_fault_button = QPushButton("LOG FAULT")
+        self.log_fault_button.setObjectName("danger")
+        self.log_fault_button.setMinimumWidth(115)
+        # Deliberately disabled until a recording is running - there is
+        # nothing to attach a marker to before then.
+        self.log_fault_button.setEnabled(False)
+        session_row.addWidget(self.log_fault_button)
 
-        connection_layout.addWidget(
-            self.record_button
-        )
+        self.recording_status = QLabel("NOT RECORDING")
+        self.recording_status.setObjectName("statusPill")
+        session_row.addWidget(self.recording_status)
 
-        self.log_fault_button = QPushButton(
-            "LOG FAULT"
-        )
+        self.recording_time_label = QLabel("00:00:00")
+        self.recording_time_label.setObjectName("clock")
+        session_row.addWidget(self.recording_time_label)
 
-        self.log_fault_button.setMinimumWidth(
-            120
-        )
+        session_row.addSpacing(6)
 
-        # It is deliberately disabled/grey until recording begins.
-        self.log_fault_button.setEnabled(
-            False
-        )
+        test_label = QLabel("Test")
+        test_label.setObjectName("fieldLabel")
+        session_row.addWidget(test_label)
 
-        connection_layout.addWidget(
-            self.log_fault_button
-        )
-
-        self.recording_status = QLabel(
-            "○ NOT RECORDING"
-        )
-
-        self.recording_status.setMinimumWidth(
-            175
-        )
-
-        connection_layout.addWidget(
-            self.recording_status
-        )
-
-        self.recording_time_label = QLabel(
-            "00:00:00"
-        )
-
-        self.recording_time_label.setMinimumWidth(
-            65
-        )
-
-        connection_layout.addWidget(
-            self.recording_time_label
-        )
-
-        connection_layout.addSpacing(8)
-        connection_layout.addWidget(QLabel("Test:"))
         self.test_name_edit = QLineEdit()
         self.test_name_edit.setPlaceholderText("Straight drive PID test")
-        self.test_name_edit.setMaximumWidth(190)
-        connection_layout.addWidget(self.test_name_edit)
+        self.test_name_edit.setMinimumWidth(150)
+        session_row.addWidget(self.test_name_edit, 1)
 
-        connection_layout.addWidget(QLabel("Notes:"))
+        notes_label = QLabel("Notes")
+        notes_label.setObjectName("fieldLabel")
+        session_row.addWidget(notes_label)
+
         self.test_notes_edit = QLineEdit()
         self.test_notes_edit.setPlaceholderText("Optional")
-        self.test_notes_edit.setMaximumWidth(190)
-        connection_layout.addWidget(self.test_notes_edit)
+        self.test_notes_edit.setMinimumWidth(120)
+        session_row.addWidget(self.test_notes_edit, 1)
 
-        connection_layout.addStretch()
+        header_layout.addLayout(session_row)
 
-        self.enter_debug_button = QPushButton(
-            "Enter Debug Mode"
-        )
+        main_layout.addWidget(header)
 
-        self.enter_debug_button.setEnabled(
-            False
-        )
-
-        connection_layout.addWidget(
-            self.enter_debug_button
-        )
-
-        self.exit_debug_button = QPushButton(
-            "Exit Debug Mode"
-        )
-
-        self.exit_debug_button.setEnabled(
-            False
-        )
-
-        connection_layout.addWidget(
-            self.exit_debug_button
-        )
-
-        main_layout.addWidget(
-            connection_group
-        )
+        # --------------------------------------------------------------
+        # Link health
+        # --------------------------------------------------------------
 
         health_row = QHBoxLayout()
-        health_row.addWidget(QLabel("Link health:"))
+        health_row.setContentsMargins(4, 0, 4, 0)
+
+        health_caption = QLabel("LINK HEALTH")
+        health_caption.setObjectName("fieldLabel")
+        health_row.addWidget(health_caption)
+
         self.link_health_label = QLabel(
-            "Frames/s: 0 | Signals/s: 0 | Last telemetry: — | Protocol errors: 0"
+            "Frames/s 0     Signals/s 0     Last telemetry —     Protocol errors 0"
         )
+        self.link_health_label.setObjectName("metric")
         health_row.addWidget(self.link_health_label)
         health_row.addStretch()
+
         main_layout.addLayout(health_row)
 
         self.tabs = QTabWidget()
@@ -871,14 +830,7 @@ class RobotDebugGUI(QMainWindow):
         title = QLabel(
             "Live Telemetry"
         )
-
-        title_font = QFont()
-        title_font.setPointSize(14)
-        title_font.setBold(True)
-
-        title.setFont(
-            title_font
-        )
+        title.setObjectName("sectionTitle")
 
         top_layout.addWidget(
             title
@@ -967,9 +919,7 @@ class RobotDebugGUI(QMainWindow):
             "Commands"
         )
 
-        command_title.setFont(
-            title_font
-        )
+        command_title.setObjectName("sectionTitle")
 
         command_header.addWidget(
             command_title
@@ -991,6 +941,10 @@ class RobotDebugGUI(QMainWindow):
 
         self.dashboard_stop_button = QPushButton(
             "STOP ROBOT"
+        )
+
+        self.dashboard_stop_button.setObjectName(
+            "danger"
         )
 
         self.dashboard_stop_button.setMinimumHeight(
@@ -1176,10 +1130,8 @@ class RobotDebugGUI(QMainWindow):
 
         self.plot_widget = pg.PlotWidget()
 
-        self.plot_widget.showGrid(
-            x=True,
-            y=True,
-            alpha=0.3,
+        theme.style_plot(
+            self.plot_widget
         )
 
         self.plot_widget.setLabel(
@@ -1231,13 +1183,7 @@ class RobotDebugGUI(QMainWindow):
             "Robot Parameters"
         )
 
-        font = QFont()
-        font.setPointSize(14)
-        font.setBold(True)
-
-        title.setFont(
-            font
-        )
+        title.setObjectName("sectionTitle")
 
         top.addWidget(
             title
@@ -1311,13 +1257,7 @@ class RobotDebugGUI(QMainWindow):
             "Robot Commands"
         )
 
-        font = QFont()
-        font.setPointSize(14)
-        font.setBold(True)
-
-        title.setFont(
-            font
-        )
+        title.setObjectName("sectionTitle")
 
         top.addWidget(
             title
@@ -1327,6 +1267,10 @@ class RobotDebugGUI(QMainWindow):
 
         self.stop_button = QPushButton(
             "STOP ROBOT"
+        )
+
+        self.stop_button.setObjectName(
+            "danger"
         )
 
         self.stop_button.setEnabled(
@@ -1344,6 +1288,7 @@ class RobotDebugGUI(QMainWindow):
         info = QLabel(
             "Commands advertised by the robot are generated here automatically."
         )
+        info.setObjectName("hint")
 
         layout.addWidget(
             info
@@ -1411,16 +1356,8 @@ class RobotDebugGUI(QMainWindow):
             True
         )
 
-        font = QFont(
-            "Consolas"
-        )
-
-        font.setStyleHint(
-            QFont.StyleHint.Monospace
-        )
-
         self.log_console.setFont(
-            font
+            theme.monospace_font(11)
         )
 
         layout.addWidget(
@@ -1473,16 +1410,8 @@ class RobotDebugGUI(QMainWindow):
             True
         )
 
-        font = QFont(
-            "Consolas"
-        )
-
-        font.setStyleHint(
-            QFont.StyleHint.Monospace
-        )
-
         self.raw_console.setFont(
-            font
+            theme.monospace_font(11)
         )
 
         layout.addWidget(
@@ -1631,11 +1560,21 @@ class RobotDebugGUI(QMainWindow):
                 f"{now - self.last_telemetry_monotonic:.2f} s"
             )
 
+        # Errors are called out in red once there are any, so a link that
+        # is quietly dropping messages doesn't blend into the readout.
+        if self.protocol_error_count:
+            errors = (
+                f"<span style='color:{theme.DANGER};font-weight:600;'>"
+                f"Protocol errors {self.protocol_error_count}</span>"
+            )
+        else:
+            errors = "Protocol errors 0"
+
         self.link_health_label.setText(
-            f"Frames/s: {len(self.raw_line_times)} | "
-            f"Signals/s: {len(self.telemetry_event_times)} | "
-            f"Last telemetry: {age_text} | "
-            f"Protocol errors: {self.protocol_error_count}"
+            f"Frames/s <b>{len(self.raw_line_times)}</b>"
+            f" &nbsp;&nbsp; Signals/s <b>{len(self.telemetry_event_times)}</b>"
+            f" &nbsp;&nbsp; Last telemetry <b>{age_text}</b>"
+            f" &nbsp;&nbsp; {errors}"
         )
 
     # =================================================================
@@ -1768,9 +1707,13 @@ class RobotDebugGUI(QMainWindow):
                 "Disconnect"
             )
 
+            # Just the device name, not the full path - "/dev/cu.usbmodem
+            # 145902401" would blow the pill out to a silly width.
             self.connection_status.setText(
-                f"● CONNECTED — {port}"
+                f"● {Path(port).name or port}"
             )
+            self.connection_status.setToolTip(port)
+            theme.set_pill_state(self.connection_status, "ok")
 
             self.port_combo.setEnabled(
                 False
@@ -1827,8 +1770,10 @@ class RobotDebugGUI(QMainWindow):
             )
 
             self.connection_status.setText(
-                "● DISCONNECTED"
+                "DISCONNECTED"
             )
+            self.connection_status.setToolTip("")
+            theme.set_pill_state(self.connection_status, "bad")
 
             self.port_combo.setEnabled(
                 True
@@ -2038,10 +1983,23 @@ class RobotDebugGUI(QMainWindow):
         if name in self.plot_curves:
             return
 
+        # Cycle through the theme's curve colours rather than letting
+        # every trace default to the same white - with four or five
+        # signals up at once they're otherwise impossible to tell apart.
+        pen = pg.mkPen(
+            theme.plot_colour(
+                self.plot_colour_index
+            ),
+            width=2,
+        )
+
+        self.plot_colour_index += 1
+
         curve = self.plot_widget.plot(
             [],
             [],
             name=name,
+            pen=pen,
         )
 
         self.plot_curves[
@@ -2085,6 +2043,8 @@ class RobotDebugGUI(QMainWindow):
             )
 
         self.plot_curves.clear()
+
+        self.plot_colour_index = 0
 
         self.active_plot_list.clear()
 
@@ -2411,10 +2371,19 @@ class RobotDebugGUI(QMainWindow):
             "%H:%M:%S"
         )
 
+        # Colour by level so a warning or an error stands out in a wall of
+        # scrolling info lines. Everything is escaped first - log text
+        # comes off the wire and may well contain '<' or '&'.
+        colour = LOG_LEVEL_COLOURS.get(
+            level.upper(),
+            theme.TEXT,
+        )
+
         self.log_console.append(
-            f"[{timestamp}] "
-            f"[{level}] "
-            f"{message}"
+            f'<span style="color:{theme.TEXT_FAINT};">[{timestamp}]</span> '
+            f'<span style="color:{colour};font-weight:600;">'
+            f"[{html.escape(level)}]</span> "
+            f'<span style="color:{colour};">{html.escape(message)}</span>'
         )
 
     def on_raw(
@@ -2497,6 +2466,10 @@ def main():
 
     app.setApplicationName(
         "Robot Debug Console"
+    )
+
+    theme.apply(
+        app
     )
 
     window = RobotDebugGUI()
