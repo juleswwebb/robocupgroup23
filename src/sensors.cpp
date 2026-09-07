@@ -42,6 +42,12 @@ void colour_print(void) {
   Serial.println(colourSensor.getClear());
 }
 
+uint16_t colour_get_red(void) { return colourSensor.getRed(); }
+uint16_t colour_get_green(void) { return colourSensor.getGreen(); }
+uint16_t colour_get_blue(void) { return colourSensor.getBlue(); }
+uint16_t colour_get_clear(void) { return colourSensor.getClear(); }
+bool colour_is_valid(void) { return colourSensor.isValid(); }
+
 // Pass in data and average the lot
 void sensor_average(/* Parameters */) {
   Serial.println("Averaging the sensors \n");

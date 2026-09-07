@@ -15,6 +15,12 @@ void optical_flow_update() {
     flowSensor.update();
 }
 
+int16_t optical_flow_get_delta_x() { return flowSensor.getDeltaX(); }
+int16_t optical_flow_get_delta_y() { return flowSensor.getDeltaY(); }
+int32_t optical_flow_get_total_x() { return flowSensor.getTotalX(); }
+int32_t optical_flow_get_total_y() { return flowSensor.getTotalY(); }
+bool optical_flow_is_valid() { return flowSensor.isValid(); }
+
 void optical_flow_print() {
     Serial.print("optical_flow: ");
     if (flowSensor.isValid()) {

@@ -17,4 +17,13 @@ void inductive_update();
 // Print the detected state (and raw pin level) to Serial. For debugging.
 void inductive_print();
 
+// True when metal is in front of the sensor (debounced).
+bool inductive_is_detected();
+
+// Unmodified pin level, for checking wiring polarity.
+bool inductive_get_raw_pin();
+
+// How many detections since boot.
+unsigned long inductive_get_detection_count();
+
 #endif /* INDUCTIVE_H_ */

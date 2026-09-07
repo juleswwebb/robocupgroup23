@@ -13,6 +13,10 @@ void inductive_update() {
     inductiveSensor.update();
 }
 
+bool inductive_is_detected() { return inductiveSensor.isDetected(); }
+bool inductive_get_raw_pin() { return inductiveSensor.getRawPinState(); }
+unsigned long inductive_get_detection_count() { return inductiveSensor.getDetectionCount(); }
+
 void inductive_print() {
     Serial.print("inductive_0: detected=");
     Serial.print(inductiveSensor.isDetected() ? "true" : "false");

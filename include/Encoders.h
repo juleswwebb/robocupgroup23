@@ -16,4 +16,10 @@ void encoders_init();
 // Print both encoders' current position to Serial. For debugging.
 void encoders_print();
 
+// Current count for encoder 0 or 1. Returns 0 for any other index.
+long encoder_get_position(unsigned char index);
+
+// Zero both counts - useful before a measured drive test.
+void encoders_reset();
+
 #endif /* ENCODERS_H_ */

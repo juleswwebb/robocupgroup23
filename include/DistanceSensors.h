@@ -31,4 +31,14 @@ void distance_sensors_print_8x8_grid();
 // Returns nullptr if no sensor has that name.
 DistanceSensor* distance_sensor_get(const char* name);
 
+// Iterate every registered sensor (for telemetry, logging, etc.) without
+// having to know their names up front.
+unsigned char distance_sensors_count();
+DistanceSensor* distance_sensor_get_by_index(unsigned char index);
+
+// Closest pixel anywhere in the 8x8 array's field of view, in mm - more
+// useful for obstacle avoidance than the single centre pixel that the
+// generic DistanceSensor interface exposes. Returns 0 if nothing is in range.
+unsigned short distance_sensors_8x8_min_mm();
+
 #endif /* DISTANCE_SENSORS_H_ */

@@ -36,6 +36,8 @@ void servo_control_set_angle(int degrees) {
     currentMicroseconds = servoD28.readMicroseconds();
 }
 
+int servo_control_get_microseconds() { return currentMicroseconds; }
+
 void servo_control_print() {
     Serial.print("servo_control: ");
     Serial.print(currentMicroseconds);

@@ -29,6 +29,7 @@
 #include "Encoders.h"
 #include "ServoControl.h"
 #include "Console.h"
+#include "DebugProtocol.h"
 
 //**********************************************************************************
 // Local Definitions
@@ -51,6 +52,9 @@
 #define IMU_UPDATE_PERIOD                    20
 #define INDUCTIVE_UPDATE_PERIOD              20
 #define CONSOLE_UPDATE_PERIOD                20 // how often we check for typed commands
+// Polled fast; the protocol self-paces to its own telemetry.interval_ms
+// parameter, which the GUI can retune live.
+#define DEBUG_PROTOCOL_UPDATE_PERIOD         10
 
 // Single knob for how often sensor readings get printed to Serial - turn
 // this up if the monitor is scrolling faster than you can read. This is
@@ -84,6 +88,7 @@
 #define INDUCTIVE_NUM_EXECUTE              -1
 #define SERVO_CONTROL_NUM_EXECUTE          -1
 #define CONSOLE_NUM_EXECUTE                -1
+#define DEBUG_PROTOCOL_NUM_EXECUTE         -1
 #define ENCODERS_NUM_EXECUTE               -1
 
 // Pin definitions
@@ -149,6 +154,9 @@ Task tPrint_servo_control(SERVO_CONTROL_PRINT_PERIOD, SERVO_CONTROL_NUM_EXECUTE,
 // Task for the serial command console (see Console.h/.cpp)
 Task tUpdate_console(CONSOLE_UPDATE_PERIOD, CONSOLE_NUM_EXECUTE, &console_update);
 
+// Task for the JSON debug protocol used by tools/debug_gui (see DebugProtocol.h/.cpp)
+Task tSend_telemetry(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXECUTE, &debug_protocol_send_telemetry);
+
 Scheduler taskManager;
 
 //**********************************************************************************
@@ -165,6 +173,10 @@ Scheduler taskManager;
 //   servo angle <0-180>   - set a position (for a positional servo)
 //   servo stop            - shorthand for "servo speed 0"
 //   help                  - show this list
+//
+// The Python debug console (tools/debug_gui) talks JSON over this same
+// port instead; connecting it switches the firmware into JSON mode
+// automatically and silences these text prints. See DebugProtocol.h.
 //**********************************************************************************
 static bool testMode = false;
 
@@ -188,6 +200,19 @@ static void set_sensor_debug_prints_enabled(bool enabled) {
   }
 }
 
+// Called by DebugProtocol when the GUI connects/disconnects. JSON telemetry
+// and human-readable prints can't share the port, so they're mutually
+// exclusive - the sensors themselves keep updating either way.
+static void on_debug_json_mode_changed(bool json_active) {
+  if (json_active) {
+    set_sensor_debug_prints_enabled(false);
+    tPrint_servo_control.disable();
+  } else {
+    set_sensor_debug_prints_enabled(!testMode);
+    tPrint_servo_control.enable();
+  }
+}
+
 static void print_console_help() {
   Serial.println("Commands:");
   Serial.println("  mode sensors            - show all sensor debug prints (default)");
@@ -207,6 +232,9 @@ static void handle_console_command(const char* command, const char* args) {
       Serial.println("mode: test (sensor prints hidden, servo prints still shown)");
     } else if (strcmp(args, "sensors") == 0) {
       testMode = false;
+      // Also drops JSON mode, so this is the way back to readable output
+      // if the debug GUI disconnected without saying goodbye.
+      debug_protocol_set_active(false);
       set_sensor_debug_prints_enabled(true);
       Serial.println("mode: sensors (all debug prints shown)");
     } else {
@@ -267,7 +295,12 @@ void setup() {
   encoders_init();         // brings up the encoder pins + interrupts
   servo_control_init();    // attaches the D28/D29 servo test pins
   console_set_command_handler(&handle_console_command);
+  console_set_json_handler(&debug_protocol_handle_json);
   console_init();
+
+  debug_protocol_set_mode_changed_handler(&on_debug_json_mode_changed);
+  debug_protocol_init();
+
   task_init();
   print_console_help();
 }
@@ -328,6 +361,7 @@ void task_init() {
   taskManager.addTask(tPrint_encoders);
   taskManager.addTask(tPrint_servo_control);
   taskManager.addTask(tUpdate_console);
+  taskManager.addTask(tSend_telemetry);
 
   // Enable the tasks
   taskManager.enableAll();

@@ -23,6 +23,7 @@ public:
     bool begin();
 
     long getPosition() const { return position_; }
+    void resetPosition();
     const char* getName() const { return name_; }
 
 private:

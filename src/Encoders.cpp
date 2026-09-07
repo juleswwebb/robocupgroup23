@@ -11,6 +11,17 @@ void encoders_init() {
     encoder1.begin();
 }
 
+long encoder_get_position(unsigned char index) {
+    if (index == 0) return encoder0.getPosition();
+    if (index == 1) return encoder1.getPosition();
+    return 0;
+}
+
+void encoders_reset() {
+    encoder0.resetPosition();
+    encoder1.resetPosition();
+}
+
 void encoders_print() {
     Serial.print("encoder_0: ");
     Serial.print(encoder0.getPosition());

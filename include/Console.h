@@ -21,6 +21,13 @@ typedef void (*ConsoleCommandHandler)(const char* command, const char* args);
 
 void console_set_command_handler(ConsoleCommandHandler handler);
 
+// Lines starting with '{' are passed here untouched instead of being
+// lowercased and tokenised as a text command - that's the debug console's
+// JSON protocol (see DebugProtocol.h).
+typedef void (*ConsoleJsonHandler)(const char* json);
+
+void console_set_json_handler(ConsoleJsonHandler handler);
+
 // Call once from setup(), after Serial.begin().
 void console_init();
 

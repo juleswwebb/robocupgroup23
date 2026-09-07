@@ -32,4 +32,7 @@ void servo_control_set_angle(int degrees);
 // Print the current commanded pulse width to Serial. For debugging.
 void servo_control_print();
 
+// Currently commanded pulse width, us.
+int servo_control_get_microseconds();
+
 #endif /* SERVO_CONTROL_H_ */

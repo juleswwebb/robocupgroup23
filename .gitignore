@@ -3,3 +3,13 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Python debug console (tools/debug_gui)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Recorded debug sessions - test artefacts, not source
+tools/debug_gui/Data/
+*.rdbg

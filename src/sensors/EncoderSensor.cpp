@@ -31,6 +31,14 @@ bool EncoderSensor::begin() {
     return true;
 }
 
+void EncoderSensor::resetPosition() {
+    // position_ is written by the ISR, so pause interrupts for the write
+    // rather than risk tearing a partially-updated long.
+    noInterrupts();
+    position_ = 0;
+    interrupts();
+}
+
 void EncoderSensor::handleChannelAEdge() {
     // Test transition
     aSet_ = digitalRead(pinA_) == HIGH;

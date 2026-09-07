@@ -92,6 +92,32 @@ DistanceSensor* distance_sensor_get(const char* name) {
     return sensorManager.get(name);
 }
 
+unsigned char distance_sensors_count() {
+    return sensorManager.count();
+}
+
+DistanceSensor* distance_sensor_get_by_index(unsigned char index) {
+    return sensorManager.get(index);
+}
+
+unsigned short distance_sensors_8x8_min_mm() {
+    uint16_t grid[MATRIX_LIDAR_GRID_SIZE];
+    tof8x8.getGrid(grid);
+
+    uint16_t closest = 0;
+    for (uint8_t i = 0; i < MATRIX_LIDAR_GRID_SIZE; i++) {
+        // 0 means "never populated", 4000 means "nothing in range" - neither
+        // is a real measurement, so skip both.
+        if (grid[i] == 0 || grid[i] >= MATRIX_LIDAR_NO_TARGET_MM) {
+            continue;
+        }
+        if (closest == 0 || grid[i] < closest) {
+            closest = grid[i];
+        }
+    }
+    return closest;
+}
+
 void distance_sensors_print_8x8_grid() {
     uint16_t grid[MATRIX_LIDAR_GRID_SIZE];
     tof8x8.getGrid(grid);

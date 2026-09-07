@@ -3,14 +3,22 @@
 #include <string.h>
 #include <ctype.h>
 
-#define CONSOLE_LINE_BUFFER_SIZE 64
+// Sized for the debug console's JSON messages, which are far longer than
+// the hand-typed text commands (a command with several arguments can run
+// well past a hundred characters).
+#define CONSOLE_LINE_BUFFER_SIZE 256
 
 static char lineBuffer[CONSOLE_LINE_BUFFER_SIZE];
 static uint8_t lineLength = 0;
 static ConsoleCommandHandler commandHandler = nullptr;
+static ConsoleJsonHandler jsonHandler = nullptr;
 
 void console_set_command_handler(ConsoleCommandHandler handler) {
     commandHandler = handler;
+}
+
+void console_set_json_handler(ConsoleJsonHandler handler) {
+    jsonHandler = handler;
 }
 
 void console_init() {
@@ -22,6 +30,15 @@ static void dispatchLine(char* line) {
     // everything after it (trimmed) is passed through as args.
     char* command = line;
     while (*command == ' ') command++;
+
+    // JSON goes to the debug protocol untouched - the lowercasing below
+    // would otherwise corrupt string values inside the message.
+    if (*command == '{') {
+        if (jsonHandler) {
+            jsonHandler(command);
+        }
+        return;
+    }
 
     char* args = command;
     while (*args && *args != ' ') {
