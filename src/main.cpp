@@ -155,7 +155,7 @@ Task tPrint_servo_control(SERVO_CONTROL_PRINT_PERIOD, SERVO_CONTROL_NUM_EXECUTE,
 Task tUpdate_console(CONSOLE_UPDATE_PERIOD, CONSOLE_NUM_EXECUTE, &console_update);
 
 // Task for the JSON debug protocol used by tools/debug_gui (see DebugProtocol.h/.cpp)
-Task tSend_telemetry(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXECUTE, &debug_protocol_send_telemetry);
+Task tUpdate_debug_protocol(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXECUTE, &debug_protocol_update);
 
 Scheduler taskManager;
 
@@ -361,7 +361,7 @@ void task_init() {
   taskManager.addTask(tPrint_encoders);
   taskManager.addTask(tPrint_servo_control);
   taskManager.addTask(tUpdate_console);
-  taskManager.addTask(tSend_telemetry);
+  taskManager.addTask(tUpdate_debug_protocol);
 
   // Enable the tasks
   taskManager.enableAll();

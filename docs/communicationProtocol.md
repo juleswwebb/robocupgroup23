@@ -6,7 +6,7 @@ This document describes how the robot debug system communicates between the robo
 
 The system is designed around one simple idea:
 
-> The Bluetooth link behaves like a normal serial cable.
+> The protocol runs over a normal serial connection.
 
 The GUI does not need to know whether the serial connection is:
 
@@ -17,6 +17,10 @@ The GUI does not need to know whether the serial connection is:
 - or a future serial transport.
 
 As long as both ends exchange the same newline-delimited JSON messages at the same baud rate, the higher-level protocol remains the same.
+
+The current Group 23 deployment uses the Teensy's direct USB Serial port. The
+Bluetooth bridge is deferred for now; it can be revisited later without
+changing the JSON message format.
 
 The current Python application consists of:
 
@@ -43,24 +47,9 @@ The communication path is:
 │  Selected COM port                              │
 └──────┬──────────────────────────────────────────┘
        │
-       │ newline-delimited JSON
-       │
-       │ 115200 baud by default
-       │
+       │ USB CDC, newline-delimited JSON
+       │ 115200 selected in the app
        ▼
-┌────────────── Bluetooth receiver ───────────────┐
-│                    CH9143                       │
-└───────────────────┬─────────────────────────────┘
-                    )))
-                    ))) Bluetooth
-                    )))
-┌───────────────────▼─────────────────────────────┐
-│                    CH9143                       │
-│             Robot-side transceiver              │
-└───────────────────┬─────────────────────────────┘
-                    │
-                    │ UART
-                    ▼
 ┌──────────────────── ROBOT ──────────────────────┐
 │                                                │
 │ Teensy 4.0                                     │
@@ -82,11 +71,14 @@ The communication path is:
 
 # 1. Physical Communication Layer
 
-## 1.1 Bluetooth serial link
+## 1.1 Current direct USB serial link
 
-The CH9143 pair behaves as a transparent serial connection.
+Connect the Teensy directly to the computer over USB. It appears as a serial
+port (`/dev/cu.usbmodem*` on macOS or `COMx` on Windows). Select that port in
+the GUI and use 115200 baud.
 
-One unit connects to the robot UART and the other appears on the computer as a COM port.
+The Python backend remains transport-neutral despite its historical filename
+`BluetoothSerial.py`; it simply opens the selected port with `pyserial`.
 
 For the computer, this could appear as:
 
@@ -119,6 +111,16 @@ or:
 ```
 
 The baud rate can also be selected from the GUI.
+
+## 1.2 Current Group 23 wiring
+
+The JSON protocol and human-readable test console share Teensy USB `Serial`.
+`Console.cpp` buffers each line and routes lines beginning with `{` to
+`DebugProtocol.cpp`. A GUI `hello` switches the firmware into JSON mode and
+disables text print tasks; `set_text_mode` reverses that transition.
+
+Teensy `Serial2` (RX2 D7, TX2 D8) is again reserved for the framed serial TOF
+sensor. Bluetooth is not part of the current active data path.
 
 ---
 
@@ -209,6 +211,7 @@ The currently supported message types are:
 hello
 request_definitions
 telemetry
+telemetry_definition
 parameter_definition
 parameter
 parameter_request
@@ -222,6 +225,10 @@ heartbeat
 ```
 
 Not every one has to be implemented immediately.
+
+`telemetry_definition` advertises a signal's friendly label, group, unit and
+whether it is intended for plotting. The current firmware sends these
+definitions for every implemented sensor and every 8x8 TOF zone.
 
 The important rule is:
 

@@ -8,11 +8,12 @@
 #include "sensors.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <stdio.h>
 #include <string.h>
 
-// Where the debug console is connected. USB serial for now; swapping this
-// to a hardware UART is all that's needed for the CH9143 Bluetooth pair,
-// since the protocol itself is transport-independent.
+// The desktop app and the text console share Teensy USB Serial. Console.cpp
+// owns line buffering and routes JSON lines here; entering JSON mode disables
+// the human-readable print tasks so protocol messages remain parseable.
 #define DEBUG_SERIAL Serial
 
 #define TELEMETRY_INTERVAL_MIN_MS 20
@@ -20,7 +21,7 @@
 
 static bool jsonActive = false;
 static bool debugMode = false;
-static unsigned long telemetryIntervalMs = 50; // 20 Hz, per the protocol doc
+static unsigned long telemetryIntervalMs = 100; // 10 Hz; USB CDC has ample room for the 8x8 frame
 static unsigned long lastTelemetryMs = 0;
 static DebugModeChangedHandler modeChangedHandler = nullptr;
 
@@ -32,6 +33,10 @@ void debug_protocol_init() {
     jsonActive = false;
     debugMode = false;
     lastTelemetryMs = millis();
+}
+
+void debug_protocol_update() {
+    debug_protocol_send_telemetry();
 }
 
 bool debug_protocol_is_active() {
@@ -97,15 +102,88 @@ static void send_parameter_value(const char* name, long value) {
     send(doc);
 }
 
+static void dotted_name(const char* name, char* out, size_t outSize);
+
 // ---------------------------------------------------------------------
 // Definitions - these are what let the GUI build its own controls, so
 // adding a tunable or a test routine never needs a Python change.
 // ---------------------------------------------------------------------
 
+static void send_telemetry_definition(const char* name,
+                                      const char* label,
+                                      const char* group,
+                                      const char* unit,
+                                      bool plottable = true) {
+    JsonDocument doc;
+    doc["type"] = "telemetry_definition";
+    doc["name"] = name;
+    doc["label"] = label;
+    doc["group"] = group;
+    doc["unit"] = unit;
+    doc["plottable"] = plottable;
+    send(doc);
+}
+
+static const char* distance_group(const char* dottedName) {
+    if (strncmp(dottedName, "ir.", 3) == 0) return "Infrared distance";
+    if (strncmp(dottedName, "ultrasonic.", 11) == 0) return "Ultrasonic";
+    return "Time of flight";
+}
+
+static void send_telemetry_definitions() {
+    char name[40];
+    for (unsigned char i = 0; i < distance_sensors_count(); i++) {
+        DistanceSensor* sensor = distance_sensor_get_by_index(i);
+        if (sensor == nullptr) continue;
+        dotted_name(sensor->getName(), name, sizeof(name));
+        send_telemetry_definition(name, sensor->getName(), distance_group(name), "mm");
+    }
+
+    send_telemetry_definition("tof.array_min", "8x8 nearest valid zone", "8x8 TOF", "mm");
+    send_telemetry_definition("tof.array_valid_zones", "8x8 valid zones", "8x8 TOF", "zones", false);
+
+    char zoneName[24];
+    char zoneLabel[24];
+    for (uint8_t row = 0; row < 8; row++) {
+        for (uint8_t col = 0; col < 8; col++) {
+            snprintf(zoneName, sizeof(zoneName), "tof.array.r%uc%u", row, col);
+            snprintf(zoneLabel, sizeof(zoneLabel), "Zone R%u C%u", row, col);
+            send_telemetry_definition(zoneName, zoneLabel, "8x8 TOF zones", "mm");
+        }
+    }
+
+    send_telemetry_definition("colour.r", "Red", "Colour", "raw");
+    send_telemetry_definition("colour.g", "Green", "Colour", "raw");
+    send_telemetry_definition("colour.b", "Blue", "Colour", "raw");
+    send_telemetry_definition("colour.c", "Clear", "Colour", "raw");
+
+    send_telemetry_definition("imu.heading", "Heading", "IMU", "deg");
+    send_telemetry_definition("imu.roll", "Roll", "IMU", "deg");
+    send_telemetry_definition("imu.pitch", "Pitch", "IMU", "deg");
+    send_telemetry_definition("imu.cal_system", "System calibration", "IMU", "0-3", false);
+    send_telemetry_definition("imu.cal_gyro", "Gyroscope calibration", "IMU", "0-3", false);
+    send_telemetry_definition("imu.cal_accel", "Accelerometer calibration", "IMU", "0-3", false);
+    send_telemetry_definition("imu.cal_mag", "Magnetometer calibration", "IMU", "0-3", false);
+
+    send_telemetry_definition("flow.dx", "Frame X movement", "Optical flow", "counts");
+    send_telemetry_definition("flow.dy", "Frame Y movement", "Optical flow", "counts");
+    send_telemetry_definition("flow.total_x", "Accumulated X", "Optical flow", "counts");
+    send_telemetry_definition("flow.total_y", "Accumulated Y", "Optical flow", "counts");
+
+    send_telemetry_definition("inductive.detected", "Metal detected", "Inductive", "bool", false);
+    send_telemetry_definition("inductive.count", "Detection count", "Inductive", "events");
+    send_telemetry_definition("encoder.0", "Encoder 0 position", "Encoders", "counts");
+    send_telemetry_definition("encoder.1", "Encoder 1 position", "Encoders", "counts");
+    send_telemetry_definition("servo.us", "Servo command", "Actuators", "us");
+    send_telemetry_definition("system.uptime_ms", "Robot uptime", "System", "ms");
+}
+
 static void send_definitions() {
     if (!jsonActive) {
         return;
     }
+
+    send_telemetry_definitions();
 
     {
         JsonDocument doc;
@@ -197,8 +275,8 @@ static void send_definitions() {
         JsonDocument doc;
         doc["type"] = "command_definition";
         doc["name"] = "set_text_mode";
-        doc["label"] = "Back to Text Output";
-        doc["description"] = "Leave JSON mode so a plain serial monitor is readable again.";
+        doc["label"] = "Resume Text Output";
+        doc["description"] = "Stop JSON telemetry and resume human-readable USB sensor output.";
         doc["args"].to<JsonArray>();
         send(doc);
     }
@@ -243,29 +321,50 @@ void debug_protocol_send_telemetry() {
     doc["time"] = now;
     JsonObject data = doc["data"].to<JsonObject>();
 
-    // Distance sensors (TOF, IR, ultrasonic) all share one interface, so
-    // they can be walked generically. Invalid readings are left out
-    // entirely rather than reported as a misleading zero.
+    // Distance sensors (TOF, IR, ultrasonic) all share one interface. Every
+    // key is included in every packet: null explicitly means invalid/offline,
+    // preventing the GUI from leaving a stale old value on screen.
     char name[40];
     for (unsigned char i = 0; i < distance_sensors_count(); i++) {
         DistanceSensor* sensor = distance_sensor_get_by_index(i);
-        if (sensor == nullptr || !sensor->isValid()) {
-            continue;
-        }
+        if (sensor == nullptr) continue;
         dotted_name(sensor->getName(), name, sizeof(name));
-        data[name] = sensor->getDistanceMM();
+        if (sensor->isValid()) data[name] = sensor->getDistanceMM();
+        else data[name] = nullptr;
     }
 
-    unsigned short closest = distance_sensors_8x8_min_mm();
-    if (closest > 0) {
-        data["tof.array_min"] = closest;
+    uint16_t grid[64];
+    const bool gridAvailable = distance_sensors_get_8x8_grid(grid);
+    uint16_t closest = 0;
+    uint8_t validZones = 0;
+    char zoneName[24];
+    for (uint8_t row = 0; row < 8; row++) {
+        for (uint8_t col = 0; col < 8; col++) {
+            const uint8_t index = row * 8 + col;
+            snprintf(zoneName, sizeof(zoneName), "tof.array.r%uc%u", row, col);
+            if (gridAvailable && grid[index] > 0 && grid[index] < 4000) {
+                data[zoneName] = grid[index];
+                validZones++;
+                if (closest == 0 || grid[index] < closest) closest = grid[index];
+            } else {
+                data[zoneName] = nullptr;
+            }
     }
+    }
+    data["tof.array_valid_zones"] = validZones;
+    if (closest > 0) data["tof.array_min"] = closest;
+    else data["tof.array_min"] = nullptr;
 
     if (colour_is_valid()) {
         data["colour.r"] = colour_get_red();
         data["colour.g"] = colour_get_green();
         data["colour.b"] = colour_get_blue();
         data["colour.c"] = colour_get_clear();
+    } else {
+        data["colour.r"] = nullptr;
+        data["colour.g"] = nullptr;
+        data["colour.b"] = nullptr;
+        data["colour.c"] = nullptr;
     }
 
     if (imu_is_valid()) {
@@ -276,6 +375,14 @@ void debug_protocol_send_telemetry() {
         data["imu.cal_gyro"] = imu_get_gyro_calibration();
         data["imu.cal_accel"] = imu_get_accel_calibration();
         data["imu.cal_mag"] = imu_get_mag_calibration();
+    } else {
+        data["imu.heading"] = nullptr;
+        data["imu.roll"] = nullptr;
+        data["imu.pitch"] = nullptr;
+        data["imu.cal_system"] = nullptr;
+        data["imu.cal_gyro"] = nullptr;
+        data["imu.cal_accel"] = nullptr;
+        data["imu.cal_mag"] = nullptr;
     }
 
     if (optical_flow_is_valid()) {
@@ -283,6 +390,11 @@ void debug_protocol_send_telemetry() {
         data["flow.dy"] = optical_flow_get_delta_y();
         data["flow.total_x"] = optical_flow_get_total_x();
         data["flow.total_y"] = optical_flow_get_total_y();
+    } else {
+        data["flow.dx"] = nullptr;
+        data["flow.dy"] = nullptr;
+        data["flow.total_x"] = nullptr;
+        data["flow.total_y"] = nullptr;
     }
 
     data["inductive.detected"] = inductive_is_detected();
@@ -312,7 +424,7 @@ void debug_protocol_set_active(bool active) {
     }
 
     if (!active) {
-        DEBUG_SERIAL.println("debug protocol: JSON mode off, text output resumed");
+        DEBUG_SERIAL.println("debug protocol: JSON mode off; text output resumed");
     }
 }
 

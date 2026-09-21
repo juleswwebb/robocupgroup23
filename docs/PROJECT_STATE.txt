@@ -1,0 +1,411 @@
+# Robocup Group 23 Project State
+
+**Snapshot date:** 17 September 2026  
+**Target:** Teensy 4.0 at 600 MHz using Arduino and PlatformIO  
+**Branch:** `main`  
+**Base commit:** `4b1b577` (`FIXED GUIS THEMING`)  
+**Remote state:** local telemetry/application integration changes are not yet committed  
+
+## Purpose
+
+This is the living technical reference for the Group 23 Robocup project. It records what is implemented, how data moves between modules, the current wiring assumptions, what has been verified on hardware, and what is still incomplete. Update it whenever wiring, addresses, task periods, protocol fields, or subsystem status changes.
+
+The project currently has a working modular sensor and debug foundation. The Teensy firmware builds successfully, the Python tools compile, most sensor drivers have been integrated, and live telemetry can be transported as newline-delimited JSON. Autonomous robot behaviour and drive-motor control are still placeholders. Several hardware paths also need revalidation, especially the shared `Wire1` bus, the ultrasonic sensors, and the wheel encoders.
+
+## Current repository state
+
+- PlatformIO environment: `teensy40`
+- Framework: Arduino
+- Scheduler: `arkhipenko/TaskScheduler`
+- Firmware entry point: `src/main.cpp`
+- Wiring and addresses: `include/sensor_config.h`
+- Protocol implementation: `src/DebugProtocol.cpp`
+- Python debug tools: `tools/debug_gui/`
+- Protocol specification: `docs/communicationProtocol.md`
+- This document: `docs/PROJECT_STATE.txt`
+
+Verification performed for this snapshot:
+
+- `platformio run`: **passed**
+- Flash code: 98,772 bytes
+- RAM1 variables: 23,648 bytes
+- Python `py_compile` over `tools/debug_gui/*.py`: **passed**
+- Hardware test: **not run**, because the Teensy was disconnected
+- Working tree note: USB telemetry, full 8x8 GUI integration, GUI theming and this documentation are local, uncommitted changes.
+
+## System architecture
+
+```text
+Physical sensors and actuators
+        |
+        | I2C, SPI, UART, analog inputs, digital GPIO and interrupts
+        v
+C++ hardware wrappers in include/sensors and src/sensors
+        |
+        | cached readings and simple getters
+        v
+Subsystem facades such as DistanceSensors, IMU, OpticalFlow and Encoders
+        |
+        | periodic calls from TaskScheduler
+        v
+src/main.cpp
+        |
+        +----------------------+
+        |                      |
+        v                      v
+USB Serial text console <-- mode switch --> DebugProtocol JSON
+                               |
+                               | Teensy USB CDC serial port
+                               v
+BluetoothSerial.py generic serial worker thread
+        |
+        +--> DebugGUI.py live display, plotting and controls
+        +--> DataRecorder.py SQLite .rdbg recording
+        +--> DataVisualiser.py offline inspection
+        +--> DataAnalysisCLI.py scripted analysis and reports
+```
+
+### Firmware startup flow
+
+`setup()` in `src/main.cpp` performs the following sequence:
+
+1. Starts USB `Serial` at 115200 baud.
+2. Enables board IO power by driving Teensy pin 49 high.
+3. Initializes the distance-sensor subsystem. This starts both I2C buses, initializes the SX1509, registers 15 distance sensors, holds all VL53 devices in reset, then releases and assigns them one at a time. The serial TOF is enabled on Serial2.
+4. Initializes the TCS34725 colour sensor on `Wire1`.
+5. Initializes the PMW3901 optical-flow sensor on SPI.
+6. Initializes the BNO055 IMU on `Wire1`.
+7. Initializes the inductive sensor, encoder interrupts, and test servo outputs.
+8. Starts the shared USB line console/JSON protocol at 115200 baud. JSON-looking lines are routed from Console to DebugProtocol.
+9. Adds and enables the active scheduler tasks.
+
+Initialization failures are reported, but setup continues so that one missing sensor does not stop the rest of the robot. Sensor wrappers that failed initialization avoid blocking reads and remain invalid.
+
+### Distance sensor interface
+
+All range sensors implement `DistanceSensor`:
+
+```cpp
+bool begin();
+void preReset();
+void update();
+uint16_t getDistanceMM() const;
+bool isValid() const;
+const char* getName() const;
+```
+
+`SensorManager` stores up to 16 `DistanceSensor` pointers. The project currently registers 15: seven VL53 sensors, one 8x8 array, one serial TOF, four IR sensors, and two ultrasonic sensors. This leaves one free registry slot.
+
+The public access points are in `DistanceSensors.h`:
+
+- `distance_sensor_get(name)` returns one sensor by its registered name.
+- `distance_sensor_get_by_index(index)` supports generic iteration.
+- `distance_sensors_update()` refreshes all registered sensors.
+- `distance_sensors_8x8_min_mm()` returns the closest valid 8x8 zone.
+
+The 8x8 array is special: the generic interface exposes its near-centre zone, while `MatrixLidarSensor::getGrid()` and `distance_sensors_get_8x8_grid()` expose all 64 zones. The JSON protocol publishes every zone independently for the GUI heat map and plotting.
+
+### Other sensor interfaces
+
+Non-distance hardware uses a similar wrapper plus a small subsystem facade:
+
+- `ImuSensor` -> `IMU.cpp` -> heading, pitch, roll and calibration getters
+- `OpticalFlowSensor` -> `OpticalFlow.cpp` -> delta and accumulated counts
+- `InductiveSensor` -> `Inductive.cpp` -> debounced active-low detection and count
+- `EncoderSensor` -> `Encoders.cpp` -> interrupt-updated positions and reset
+- `ColourSensor` -> `sensors.cpp` -> raw red, green, blue and clear channels
+- `ServoControl.cpp` -> pulse, speed and angle commands
+
+The wrappers cache values. Other code should use the facade getters rather than talk to vendor libraries directly.
+
+## Wiring and address map
+
+### Buses
+
+| Bus | Teensy pins | Device | Address or select | Notes |
+|---|---:|---|---:|---|
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | SX1509 IO expander | `0x3F` | Controls all seven VL53 XSHUT lines |
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | 2 x VL53L0X | `0x30`, `0x31` | Addresses assigned at startup |
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | 5 x VL53L1X | `0x35` to `0x39` | Addresses assigned at startup |
+| `Wire1` I2C bus 1 | SDA 17, SCL 16 | BNO055 | `0x28` | IMU part of SEN0253 |
+| `Wire1` I2C bus 1 | SDA 17, SCL 16 | TCS34725 | `0x29` | Raw RGBC colour sensor |
+| `Wire1` I2C bus 1 | SDA 17, SCL 16 | DFRobot 8x8 TOF | `0x33` | 64-zone matrix sensor |
+| SPI | MOSI 11, MISO 12, SCK 13 | PMW3901 | CS 10 | Optical-flow counts, not millimetres |
+| `Serial2` | RX 7, TX 8 | Serial TOF | 115200 baud | 0x59/0x59 framed ranging sensor |
+| USB `Serial` | USB cable | Debug GUI and text console | 115200 selected in app | JSON and text are mutually exclusive modes |
+
+`Wire` runs at 400 kHz. `Wire1` is currently set to 100 kHz by `distance_sensors_init()` for conservative 8x8 operation; the colour and IMU modules reuse the already-started bus.
+
+### GPIO and analog connections
+
+| Function | Pin or pins | Current use |
+|---|---:|---|
+| Board IO power enable | D49 | Driven high during startup |
+| IR distance 0 to 3 | A6, A7, A8, A9 | Analog readings converted to approximate millimetres |
+| Inductive proximity | A0, also D14 | Digital active-low input with 10 ms debounce |
+| Ultrasonic 0 | D30 trigger, D31 echo | HC-SR04-style interrupt measurement |
+| Ultrasonic 1 | D32 trigger, D33 echo | HC-SR04-style interrupt measurement |
+| Encoder 0 | D2 channel A, D3 channel B | Interrupt on A only |
+| Encoder 1 | D4 channel A, D5 channel B | Interrupt on A only |
+| Servo test connector | D28 and D29 | Both currently output the same command |
+
+D28 and D29 are also the `Serial7` pins. They cannot be used for `Serial7` while attached as servo PWM outputs. Both are deliberately driven because the physical signal conductor has not yet been identified; this is a temporary test arrangement.
+
+### VL53 XSHUT mapping
+
+The XSHUT numbers are SX1509 IO numbers, not Teensy GPIO numbers.
+
+| Physical label | SX1509 IO | Sensor type | Runtime I2C address | Registered name |
+|---|---:|---|---:|---|
+| XSHUT0 | IO0 | VL53L0X | `0x30` | `tof_xshut0` |
+| XSHUT1 | IO1 | VL53L0X | `0x31` | `tof_xshut1` |
+| XSHUT2 | IO2 | VL53L1X | `0x35` | `tof_xshut2` |
+| XSHUT3 | IO3 | VL53L1X | `0x36` | `tof_xshut3` |
+| XSHUT4 | IO4 | VL53L1X | `0x37` | `tof_xshut4` |
+| XSHUT5 | IO5 | VL53L1X | `0x38` | `tof_xshut5` |
+| XSHUT6 | IO6 | VL53L1X | `0x39` | `tof_xshut6` |
+
+At boot, `SensorManager::beginAll()` first drives every XSHUT low. It then starts the sensors in registration order, changes each from the shared factory address `0x29`, and only then releases the next sensor.
+
+## Implemented hardware status
+
+Status terms:
+
+- **Verified** means useful live values were observed during an earlier hardware test.
+- **Coded** means the driver and integration exist and compile, but hardware is not currently proven.
+- **Issue** means a known hardware or behaviour problem remains.
+- **Not implemented** means only a placeholder or no integration exists.
+
+| Hardware | Code status | Last known hardware status | Main files |
+|---|---|---|---|
+| 2 x VL53L0X and 5 x VL53L1X | Implemented through common distance API | **XSHUT6 needs revalidation** after changing to VL53L1X | `DistanceSensors.cpp`, `VL53L0XSensor.cpp`, `VL53L1XSensor.cpp` |
+| DFRobot 8x8 TOF | Full 64-zone reads, centre value and minimum value implemented | **Verified previously**; later `Wire1` tests showed intermittent or invalid output and need revalidation | `MatrixLidarSensor.cpp`, `DistanceSensors.cpp` |
+| Serial TOF | Nine-byte frame parser enabled on Serial2 with range and signal-strength validation | **Verified previously**; needs revalidation after transport change | `SerialTofSensor.cpp`, `sensor_config.h` |
+| USB debug application | Non-blocking newline receive and JSON transmit on USB Serial | **Coded and build-verified**; live handshake needs testing with the Teensy connected | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
+| 4 x analog IR | Implemented through common distance API | **Verified** | `IRDistanceSensor.cpp` |
+| 2 x HC-SR04 ultrasonic | Non-blocking trigger plus echo ISR implemented | **Issue:** both continued to report invalid; supply and echo path were unresolved | `UltrasonicSensor.cpp` |
+| TCS34725 colour | Raw RGBC integration implemented | **Verified previously**; later returned zeros while the shared `Wire1` bus was also suspect | `ColourSensor.cpp`, `sensors.cpp` |
+| PMW3901 optical flow | SPI motion and accumulated counts implemented | **Verified** | `OpticalFlowSensor.cpp`, `OpticalFlow.cpp` |
+| BNO055 IMU | Euler orientation and calibration implemented | **Verified** changing with movement; calibration remained low during tests | `ImuSensor.cpp`, `IMU.cpp` |
+| BMP280 on SEN0253 | No driver or telemetry | **Not implemented** | None |
+| Inductive proximity | Active-low debounce, detection state and count implemented | **Verified after wiring was corrected** | `InductiveSensor.cpp`, `Inductive.cpp` |
+| 2 x quadrature encoder | Channel-A interrupt decoder and reset implemented | **Issue:** counts did not change when wheels were spun; electrical path still unresolved | `EncoderSensor.cpp`, `Encoders.cpp` |
+| One servo or continuous-rotation servo | Pulse, speed, angle and stop control implemented | **Verified**, but both D28 and D29 are driven until signal pin is identified | `ServoControl.cpp` |
+| Drive motors | Placeholder definitions and print-only functions | **Not implemented** | `motors.h`, `motors.cpp` |
+
+## Scheduler and timing
+
+The project uses a cooperative scheduler. Long blocking calls delay every other task.
+
+| Active task | Period | Behaviour |
+|---|---:|---|
+| Distance sensor update | 20 ms | Calls every registered distance sensor |
+| Colour sensor update | 60 ms | Performs a blocking TCS34725 raw read with approximately 50 ms integration |
+| Optical-flow update | 20 ms | Reads new motion counts |
+| IMU update | 20 ms | Reads Euler orientation and calibration |
+| Inductive update | 20 ms | Runs debounce state machine |
+| Console update | 20 ms | Non-blocking line collection and dispatch |
+| Debug protocol poll | 10 ms | Sends USB JSON telemetry when active; Console handles incoming lines |
+| Normal sensor print tasks | 1000 ms | Human-readable debugging |
+| 8x8 grid print | 3000 ms | Prints all 64 millimetre values |
+
+The telemetry interval is separately tunable from 20 to 2000 ms and defaults to 100 ms, or 10 Hz. USB CDC has sufficient headroom for the 64-zone frame. Changing print frequency does not change sensor sampling frequency.
+
+Motor, weight collection, return-to-base, base detection, unloading, generic averaging, and the old `read_ultrasonic` and `read_infrared` placeholder tasks are not added to the scheduler. The real IR and ultrasonic classes are already updated by the distance-sensor task; the placeholder tasks should not be enabled.
+
+## Serial links and commands
+
+The firmware uses USB `Serial` for both human-readable diagnostics/test commands and the JSON application protocol. `Console.cpp` owns line buffering. Lines beginning with `{` go to `DebugProtocol`; other lines go to the typed command handler. When JSON mode becomes active, human-readable print tasks are suppressed so they cannot corrupt JSON. Hardware `Serial2` belongs to the serial TOF.
+
+### Human-readable mode
+
+USB human-readable output is the startup mode. Available console commands are:
+
+```text
+mode sensors
+mode test
+servo us 500-2500
+servo speed -100..100
+servo angle 0-180
+servo stop
+help
+```
+
+`mode test` hides sensor print tasks while leaving sensor updates active. `SERIAL_PRINT_PERIOD` in `src/main.cpp` is the main print-rate setting and currently equals 1000 ms.
+
+### JSON debug mode
+
+When the Python GUI sends `{"type":"hello"}` over USB, the firmware starts newline-delimited JSON telemetry and disables human-readable sensor print tasks on that same stream.
+
+The actual telemetry names produced by the current firmware are:
+
+- `tof.xshut0` through `tof.xshut6`
+- `tof.8x8` for the near-centre matrix zone when valid
+- `tof.array_min` for the closest valid matrix zone
+- `tof.serial` for the Serial2 ranging sensor
+- `tof.array.r0c0` through `tof.array.r7c7` for all 64 matrix zones
+- `tof.array_valid_zones` for frame health
+- `ir.0` through `ir.3`
+- `ultrasonic.0` and `ultrasonic.1`
+- `colour.r`, `colour.g`, `colour.b`, `colour.c`
+- `imu.heading`, `imu.roll`, `imu.pitch`
+- `imu.cal_system`, `imu.cal_gyro`, `imu.cal_accel`, `imu.cal_mag`
+- `flow.dx`, `flow.dy`, `flow.total_x`, `flow.total_y`
+- `inductive.detected`, `inductive.count`
+- `encoder.0`, `encoder.1`
+- `servo.us`
+- `system.uptime_ms`
+
+Every signal is sent each packet. Invalid readings are JSON `null`, which clears stale GUI values and displays as `INVALID`. The full 64-zone grid is sent to the dedicated 8x8 GUI view; every zone can also be plotted and recorded. `telemetry_definition` messages provide labels, groups, units and plotting metadata.
+
+The firmware advertises two parameters:
+
+- `telemetry.interval_ms`, constrained to 20 to 2000 ms
+- `servo.pulse_us`, advertised as 1000 to 2000 us and gated by debug mode
+
+It advertises five commands:
+
+- `stop`, always allowed and sets the servo to neutral
+- `set_debug_mode`
+- `servo_set`, gated by debug mode
+- `encoders_reset`
+- `set_text_mode`
+
+The low-level servo function permits 500 to 2500 us, while the GUI parameter definition advertises the safer 1000 to 2000 us range.
+
+## Python application data flow
+
+`BluetoothSerial.py` owns a generic `QThread` serial worker (the filename is historical). It opens the selected Teensy USB serial port with `pyserial`, reads one newline-terminated message at a time, emits raw text for inspection, parses JSON objects, and converts protocol message types into Qt signals.
+
+On connection it sends:
+
+1. `hello`
+2. `request_definitions`
+
+The firmware then advertises its parameters and commands. `DebugGUI.py` builds controls from those definitions, so adding a compatible firmware parameter or command normally does not require a Python UI change.
+
+For grouped telemetry, `BluetoothSerial.py` emits one Qt signal per key in the JSON `data` object. `DebugGUI.py` stores the latest value, appends numeric history for plots, updates the grouped/unit-labelled telemetry table, updates the 8x8 heat map, and optionally records the sample. Numeric signals are automatically available to the plotter; a matrix cell can be selected and plotted directly.
+
+`DataRecorder.py` writes `.rdbg` SQLite files on a background thread. The schema contains metadata, telemetry, logs, commands, parameter edits and snapshots, robot states, raw serial lines, faults, and annotations. Files are stored under `tools/debug_gui/Data/` and ignored by Git.
+
+`DataVisualiser.py` loads recordings for plots, event inspection, comparison runs, derived signals, measurement regions, anomaly detection, raw serial inspection, and CSV export. `DataAnalysisCLI.py` provides terminal commands for summaries, statistics, fault context, correlations, PID metrics, anomalies, exports, and Markdown reports.
+
+The active protocol uses Teensy USB `Serial`. Bluetooth work is deferred. Because the Python backend opens an ordinary serial device, the same JSON format can later be moved to a transparent wireless bridge without redesigning the application.
+
+## Implemented modules and remaining placeholders
+
+### Implemented foundations
+
+- PlatformIO Teensy 4.0 project and dependency management
+- Cooperative task scheduling
+- Central wiring configuration
+- Common distance-sensor interface and registry
+- Seven-sensor VL53 address sequencing through SX1509
+- 8x8 TOF, IR, ultrasonic and enabled Serial2 TOF wrappers
+- Shared USB Serial transport for the JSON protocol and typed console
+- Colour, optical flow, IMU, inductive, encoder and servo modules
+- Human-readable test console
+- Self-describing newline-delimited JSON telemetry, parameters and commands
+- Live grouped telemetry, unit labels, generic plots and dedicated 8x8 heat map
+- Python recording, offline visualization and CLI analysis
+- Shared professional GUI theme and screen-aware sizing
+- Wiring map tab: human names, per-type port selection, clash/firmware checks, saved to `tools/debug_gui/hardware_map.json`
+- Dashboard colour swatch with white calibration and colour naming (`colour_view.py`)
+- 8×8 depth camera: depth image, top-down projection, background-subtracted object detection (`tof_view.py`)
+
+### Incomplete robot behaviour
+
+- Drive-motor output, direction control, limits and feedback loop
+- Reliable wheel-encoder hardware input
+- BMP280 pressure and temperature data
+- Weight detection and collection state machine
+- Navigation and return-to-base logic
+- Base colour classification and unloading behaviour
+- Sensor fusion, calibration, filtering and physical-unit conversion where needed
+- Automated unit or integration tests
+
+## Known issues and technical risks
+
+1. **The `Wire1` hardware path needs revalidation.** The 8x8 array, colour sensor and BNO055 share this bus. They worked at different stages, but later the 8x8 became invalid and colour values became zero. A failure affecting all three points first to shared SDA, SCL, power, ground, or connector integrity rather than three independent driver failures.
+2. **The ultrasonic sensors have no proven valid echo.** Earlier testing identified power uncertainty. In addition, both instances currently have the same 60 ms schedule and can trigger at almost the same time, which risks acoustic cross-talk. Stagger their trigger phases after power and voltage-level checks.
+3. **Encoder counts are not hardware-verified.** Confirm encoder supply, common ground, signal voltage, pin continuity, and whether pull-ups are required. Then observe D2 to D5 with a scope or logic analyser before changing the decoder.
+4. **The servo signal pin is still ambiguous.** Driving both D28 and D29 works for testing but consumes two pins and prevents `Serial7` use. Identify the actual signal conductor and drive only that pin.
+5. **The serial TOF needs revalidation.** It is restored to Serial2 and now rejects zero, out-of-range and zero-strength frames, but has not been tested since this change.
+6. **The colour read blocks the cooperative scheduler.** Its approximately 50 ms integration call runs every 60 ms, so nominal 20 ms tasks cannot maintain their requested timing. Consider a non-blocking register read strategy or reduce the read rate when timing becomes important.
+7. **The complete USB application handshake is not yet hardware-verified.** Firmware and Python checks pass, but the Teensy was disconnected during integration. Connect it and verify definitions, live values, plots, recording and commands.
+8. **Documentation naming is slightly inconsistent.** The actual centre-zone telemetry key is `tof.8x8`; older GUI documentation refers to `tof.array_centre`.
+9. **Robot behaviour modules are still inherited stubs.** Do not mistake successful compilation for autonomous readiness.
+
+## Recommended next integration order
+
+1. Recheck board IO power, ground, and both I2C buses with an address scanner.
+2. Revalidate all three `Wire1` devices together at `0x28`, `0x29`, and `0x33`.
+3. Identify the single servo signal pin and stop driving the other pin.
+4. Prove encoder waveforms electrically, then verify signed counts and counts per wheel revolution.
+5. Restore HC-SR04 power and echo operation, then stagger trigger timing.
+6. Connect and verify the USB GUI handshake, telemetry definitions, live values, 8x8 view, plots, recording, commands and emergency stop path.
+7. Define a safe motor-driver interface with neutral-on-startup, hard output limits, and an always-available stop path.
+8. Add closed-loop wheel-speed tests before writing autonomous behaviour.
+9. Revalidate the restored Serial2 TOF and tune its accepted range/strength thresholds if required.
+10. Implement navigation, weight collection, return-to-base and unloading as explicit state machines.
+
+## How to add another sensor
+
+For another distance sensor:
+
+1. Add pins, bus and address to `include/sensor_config.h`.
+2. Implement a `DistanceSensor` subclass under `include/sensors` and `src/sensors`.
+3. Construct and register it in `src/DistanceSensors.cpp`.
+4. Keep `update()` non-blocking where practical and cache the latest reading.
+5. Return `false` from `isValid()` for timeouts, sentinel values, failed initialization or absent targets.
+6. The generic JSON loop will automatically publish the sensor using its registered name, including `null` when invalid. Add a telemetry definition if a friendlier label or non-mm unit is required.
+
+For a non-distance sensor:
+
+1. Create a small hardware wrapper that owns the vendor object and cached data.
+2. Add a subsystem facade with `init`, `update`, validity and getter functions.
+3. Initialize it in `setup()`.
+4. Add an appropriately paced scheduler task.
+5. Add telemetry fields in `debug_protocol_send_telemetry()`.
+6. If it needs tuning or test actions, advertise parameter and command definitions rather than hard-coding GUI controls.
+
+## Build and operation reference
+
+From the repository root:
+
+```bash
+platformio run
+platformio run -t upload
+platformio device monitor
+```
+
+The USB monitor and Python GUI both use the Teensy's USB serial port at 115200. They cannot run at the same time: close PlatformIO's monitor before connecting the GUI, and disconnect the GUI before reopening the monitor.
+
+To run the Python tools:
+
+```bash
+cd tools/debug_gui
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python DebugGUI.py
+```
+
+Offline tools:
+
+```bash
+python DataVisualiser.py
+python DataAnalysisCLI.py summary Data/SomeRun.rdbg
+```
+
+If PyQt reports that the macOS `cocoa` platform plugin cannot be initialized, reinstall the Qt wheel in the active virtual environment:
+
+```bash
+pip install --force-reinstall --no-cache-dir "PyQt6==6.11.0" "PyQt6-Qt6==6.11.0"
+```
+
+## Update checklist
+
+When the project changes, update this document if any of these changed: a physical pin or connector; an I2C address or bus; a sensor model or quantity; a scheduler period; a telemetry key, parameter, or command; a confirmed hardware status; an unresolved fault; a build result; or a module implementation status.
+
+Keep observed hardware results separate from code completion. A driver can compile without the wiring being correct, and a sensor can work electrically without its data yet being useful to the robot.

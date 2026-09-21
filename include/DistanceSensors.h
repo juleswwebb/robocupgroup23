@@ -41,4 +41,8 @@ DistanceSensor* distance_sensor_get_by_index(unsigned char index);
 // generic DistanceSensor interface exposes. Returns 0 if nothing is in range.
 unsigned short distance_sensors_8x8_min_mm();
 
+// Copy the latest complete 8x8 frame into buf (64 row-major uint16 values).
+// Returns false until a frame has been received successfully.
+bool distance_sensors_get_8x8_grid(unsigned short* buf);
+
 #endif /* DISTANCE_SENSORS_H_ */

@@ -27,6 +27,7 @@ public:
     void update() override;
     uint16_t getDistanceMM() const override; // centre pixel, mm
     bool isValid() const override;
+    bool isGridAvailable() const { return initialized_ && lastReadOk_; }
     const char* getName() const override { return name_; }
 
     // Full 8x8 grid, row-major, mm. buf must hold MATRIX_LIDAR_GRID_SIZE entries.

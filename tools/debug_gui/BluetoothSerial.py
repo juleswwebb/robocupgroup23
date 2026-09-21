@@ -1,7 +1,7 @@
 """
 BluetoothSerial.py
 
-Generic serial/Bluetooth communications backend for the robot debug GUI.
+Generic serial communications backend for the robot debug GUI.
 
 Protocol:
     Newline-delimited JSON.
@@ -222,6 +222,7 @@ class BluetoothSerial(QObject):
     connection_changed = pyqtSignal(bool, str)
 
     telemetry_received = pyqtSignal(str, object, object)
+    telemetry_definition_received = pyqtSignal(dict)
 
     parameter_definition_received = pyqtSignal(dict)
     parameter_value_received = pyqtSignal(str, object)
@@ -501,6 +502,16 @@ class BluetoothSerial(QObject):
                     message.get("value"),
                     timestamp,
                 )
+
+        # --------------------------------------------------------------
+        # Telemetry definition (friendly label, group, unit, plottability)
+        # --------------------------------------------------------------
+
+        elif message_type == "telemetry_definition":
+
+            self.telemetry_definition_received.emit(
+                message
+            )
 
         # --------------------------------------------------------------
         # Parameter definition

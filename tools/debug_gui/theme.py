@@ -229,6 +229,8 @@ QLineEdit[placeholderText] {{
 QCheckBox {{
     spacing: 7px;
     color: {TEXT};
+    /* Otherwise it paints the window colour as a strip inside group boxes. */
+    background: transparent;
 }}
 
 QCheckBox::indicator {{

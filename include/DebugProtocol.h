@@ -5,11 +5,9 @@
 // Newline-delimited JSON protocol for the Python debug console in
 // tools/debug_gui. Full spec: docs/communicationProtocol.md.
 //
-// The firmware normally prints human-readable text ("tof_xshut0: 163 mm").
-// When the GUI connects it sends {"type":"hello"}, and receiving that
-// switches us into JSON mode: text prints stop and grouped telemetry
-// packets start. "set_text_mode" (or the console's "mode sensors") goes
-// back, so the plain serial monitor stays usable.
+// The JSON protocol uses Teensy USB Serial. When the GUI connects it sends
+// {"type":"hello"}; receiving that starts grouped JSON telemetry and silences
+// the human-readable sensor print tasks so the two formats cannot interleave.
 //
 // Actuator commands are gated behind debug mode, per the protocol doc's
 // safety guidance - the firmware is the final authority on what's safe to
@@ -26,7 +24,11 @@ void debug_protocol_set_mode_changed_handler(DebugModeChangedHandler handler);
 
 void debug_protocol_init();
 
-// Feed one received line that looks like JSON (starts with '{').
+// Send telemetry when its configured interval has elapsed. Incoming lines are
+// collected by Console and routed to debug_protocol_handle_json().
+void debug_protocol_update();
+
+// Process one complete JSON line routed here by Console.
 void debug_protocol_handle_json(const char* json);
 
 // Send one grouped telemetry packet. Call periodically from a scheduled

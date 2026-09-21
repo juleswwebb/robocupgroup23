@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "devices": [
+    {
+      "name": "Top_Left",
+      "kind": "vl53l0x",
+      "port": "xshut0"
+    },
+    {
+      "name": "Top_Right",
+      "kind": "vl53l0x",
+      "port": "xshut1"
+    },
+    {
+      "name": "NOT IN USE",
+      "kind": "vl53l1x",
+      "port": "xshut2"
+    },
+    {
+      "name": "Front_Top_Right",
+      "kind": "vl53l1x",
+      "port": "xshut3"
+    },
+    {
+      "name": "Front_Bottom_Right",
+      "kind": "vl53l1x",
+      "port": "xshut4"
+    },
+    {
+      "name": "Front_Bottom_Left",
+      "kind": "vl53l1x",
+      "port": "xshut5"
+    },
+    {
+      "name": "Front_Top_Left",
+      "kind": "vl53l0x",
+      "port": "xshut6"
+    },
+    {
+      "name": "8×8 ToF array",
+      "kind": "tof_8x8",
+      "port": "wire1_0x33"
+    },
+    {
+      "name": "Serial ToF",
+      "kind": "serial_tof",
+      "port": "serial2"
+    },
+    {
+      "name": "Ultrasonic 0",
+      "kind": "ultrasonic",
+      "port": "ultrasonic_30_31"
+    },
+    {
+      "name": "Ultrasonic 1",
+      "kind": "ultrasonic",
+      "port": "ultrasonic_32_33"
+    },
+    {
+      "name": "Colour sensor",
+      "kind": "colour",
+      "port": "wire1_0x29"
+    },
+    {
+      "name": "IMU",
+      "kind": "imu",
+      "port": "wire1_0x28"
+    },
+    {
+      "name": "Optical flow",
+      "kind": "optical_flow",
+      "port": "spi_cs10"
+    },
+    {
+      "name": "Inductive sensor",
+      "kind": "inductive",
+      "port": "a0"
+    },
+    {
+      "name": "Encoder 0",
+      "kind": "encoder",
+      "port": "encoder_2_3"
+    },
+    {
+      "name": "Encoder 1",
+      "kind": "encoder",
+      "port": "encoder_4_5"
+    },
+    {
+      "name": "Servo",
+      "kind": "servo",
+      "port": "d28"
+    }
+  ]
+}

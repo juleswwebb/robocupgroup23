@@ -19,7 +19,10 @@ public:
     bool begin() override;
     void update() override;
     uint16_t getDistanceMM() const override { return lastRangeMM_; }
-    bool isValid() const override { return frameReceived_; }
+    bool isValid() const override {
+        return frameReceived_ && lastRangeMM_ > 0 && lastRangeMM_ <= 12000
+               && lastStrength_ > 0;
+    }
     const char* getName() const override { return name_; }
 
     uint16_t getSignalStrength() const { return lastStrength_; }

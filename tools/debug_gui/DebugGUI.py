@@ -22,6 +22,7 @@ Required beside this file:
 from __future__ import annotations
 
 import html
+import json
 import sys
 import time
 import subprocess
@@ -43,6 +44,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -62,6 +64,9 @@ import pyqtgraph as pg
 import theme
 from BluetoothSerial import BluetoothSerial
 from DataRecorder import DataRecorder
+from colour_view import ColourCard
+from tof_view import TofView
+from wiring import HardwareMap, WiringPanel
 
 
 
@@ -308,6 +313,7 @@ class RobotDebugGUI(QMainWindow):
         self.recorder = DataRecorder()
 
         self.telemetry = {}
+        self.telemetry_definitions = {}
         self.telemetry_rows = {}
         self.telemetry_history = {}
         self.parameter_editors = {}
@@ -328,8 +334,17 @@ class RobotDebugGUI(QMainWindow):
 
         self.start_time = time.monotonic()
 
+        # What's plugged in where, with human names. Loaded before the UI
+        # because the dashboard and plots label signals from it.
+        self.hardware_map, wiring_warning = HardwareMap.load(
+            HardwareMap.default_path()
+        )
+
         self._build_ui()
         self._connect_signals()
+
+        if wiring_warning:
+            self.add_log("WARN", wiring_warning)
 
         self.port_refresh_timer = QTimer(self)
         self.port_refresh_timer.timeout.connect(
@@ -354,6 +369,16 @@ class RobotDebugGUI(QMainWindow):
             self.update_link_health
         )
         self.health_timer.start(500)
+
+        # 10 Hz is plenty for a colour swatch, and it only redraws while
+        # the dashboard is actually showing.
+        self.colour_timer = QTimer(self)
+        self.colour_timer.timeout.connect(
+            self.refresh_colour_card
+        )
+        self.colour_timer.start(100)
+
+        self.apply_device_names()
 
         self.refresh_ports()
 
@@ -465,6 +490,9 @@ class RobotDebugGUI(QMainWindow):
         session_metadata = {
             "test_name": self.test_name_edit.text().strip(),
             "test_notes": self.test_notes_edit.text().strip(),
+            # So a recording still says what "Top right ToF" was
+            # plugged into, even after the wiring is later changed.
+            "wiring": json.dumps(self.hardware_map.snapshot()),
             **self.git_metadata(),
         }
 
@@ -786,6 +814,8 @@ class RobotDebugGUI(QMainWindow):
 
         self._build_dashboard_tab()
         self._build_plot_tab()
+        self._build_matrix_tab()
+        self._build_wiring_tab()
         self._build_parameter_tab()
         self._build_command_tab()
         self._build_log_tab()
@@ -852,13 +882,15 @@ class RobotDebugGUI(QMainWindow):
 
         self.telemetry_table = QTableWidget(
             0,
-            3,
+            5,
         )
 
         self.telemetry_table.setHorizontalHeaderLabels(
             [
+                "Group",
                 "Signal",
                 "Value",
+                "Unit",
                 "Last Update",
             ]
         )
@@ -881,16 +913,26 @@ class RobotDebugGUI(QMainWindow):
 
         header.setSectionResizeMode(
             0,
-            header.ResizeMode.Stretch,
-        )
-
-        header.setSectionResizeMode(
-            1,
             header.ResizeMode.ResizeToContents,
         )
 
         header.setSectionResizeMode(
+            1,
+            header.ResizeMode.Stretch,
+        )
+
+        header.setSectionResizeMode(
             2,
+            header.ResizeMode.ResizeToContents,
+        )
+
+        header.setSectionResizeMode(
+            3,
+            header.ResizeMode.ResizeToContents,
+        )
+
+        header.setSectionResizeMode(
+            4,
             header.ResizeMode.ResizeToContents,
         )
 
@@ -911,6 +953,14 @@ class RobotDebugGUI(QMainWindow):
 
         command_panel_layout = QVBoxLayout(
             command_panel
+        )
+
+        self.colour_card = ColourCard(
+            self.settings
+        )
+
+        command_panel_layout.addWidget(
+            self.colour_card
         )
 
         command_header = QHBoxLayout()
@@ -1020,6 +1070,7 @@ class RobotDebugGUI(QMainWindow):
 
     def _build_plot_tab(self):
         page = QWidget()
+        self.plot_page = page
 
         layout = QVBoxLayout(
             page
@@ -1167,8 +1218,97 @@ class RobotDebugGUI(QMainWindow):
         )
 
     # =================================================================
-    # Parameters
+    # 8x8 TOF field
     # =================================================================
+
+    def _build_matrix_tab(self):
+        self.tof_view = TofView(
+            self.settings,
+            telemetry_source=lambda: self.telemetry,
+        )
+        self.tof_view.zone_plot_requested.connect(self.plot_matrix_zone)
+        self.tabs.addTab(self.tof_view, "8×8 TOF")
+
+    # =================================================================
+    # Wiring
+    # =================================================================
+
+    def _build_wiring_tab(self):
+        self.wiring_panel = WiringPanel(
+            self.hardware_map,
+            live_source=self.wiring_live_values,
+            format_value=self.wiring_format_value,
+        )
+        self.wiring_panel.changed.connect(self.on_wiring_changed)
+        self.tabs.addTab(self.wiring_panel, "Wiring")
+
+    def wiring_live_values(self) -> dict | None:
+        """Latest telemetry, or None once the link has gone quiet.
+
+        The telemetry dict keeps its last values after a disconnect, and
+        showing those as "Live" would be a lie.
+        """
+        if (
+            self.last_telemetry_monotonic is None
+            or time.monotonic() - self.last_telemetry_monotonic > 2.0
+        ):
+            return None
+        return self.telemetry
+
+    def wiring_format_value(self, name: str, value: Any, unit: bool = True) -> str:
+        text = self.format_value(value)
+        if not unit or value is None:
+            return text
+        _, _, unit_text = self._telemetry_metadata(name)
+        return f"{text} {unit_text}".strip()
+
+    def signal_display_name(self, name: str) -> str:
+        """Plot-picker text: the human label, with the raw key alongside."""
+        _, label, _ = self._telemetry_metadata(name)
+        return name if label == name else f"{label}  ({name})"
+
+    def refresh_colour_card(self):
+        if self.colour_card.isVisible():
+            self.colour_card.refresh(self.wiring_live_values())
+
+    def apply_device_names(self):
+        colour_device = self.hardware_map.device_for_signal("colour.r")
+        self.colour_card.set_device_name(
+            colour_device.name if colour_device else "Colour sensor"
+        )
+        tof_device = self.hardware_map.device_for_signal("tof.8x8")
+        self.tof_view.set_device_name(
+            tof_device.name if tof_device else "8×8 ToF array"
+        )
+
+    def on_wiring_changed(self):
+        self.apply_device_names()
+
+        # Relabel everything already on screen; new signals pick the
+        # names up as they arrive.
+        for name in self.telemetry_rows:
+            self._update_telemetry_identity(name)
+
+        for index in range(self.plot_signal_combo.count()):
+            name = self.plot_signal_combo.itemData(index)
+            if name:
+                self.plot_signal_combo.setItemText(
+                    index, self.signal_display_name(name)
+                )
+
+        legend = self.plot_widget.getPlotItem().legend
+        for index in range(self.active_plot_list.count()):
+            item = self.active_plot_list.item(index)
+            name = item.data(Qt.ItemDataRole.UserRole)
+            if not name:
+                continue
+            _, label, _ = self._telemetry_metadata(name)
+            item.setText(label)
+            curve = self.plot_curves.get(name)
+            if legend is not None and curve is not None:
+                legend_label = legend.getLabel(curve)
+                if legend_label is not None:
+                    legend_label.setText(label)
 
     def _build_parameter_tab(self):
         page = QWidget()
@@ -1496,6 +1636,7 @@ class RobotDebugGUI(QMainWindow):
             self.clear_plots
         )
 
+
         self.clear_log_button.clicked.connect(
             self.log_console.clear
         )
@@ -1510,6 +1651,10 @@ class RobotDebugGUI(QMainWindow):
 
         self.bluetooth.telemetry_received.connect(
             self.on_telemetry
+        )
+
+        self.bluetooth.telemetry_definition_received.connect(
+            self.on_telemetry_definition
         )
 
         self.bluetooth.parameter_definition_received.connect(
@@ -1824,6 +1969,53 @@ class RobotDebugGUI(QMainWindow):
     # Telemetry
     # =================================================================
 
+    def on_telemetry_definition(self, definition: dict):
+        name = str(definition.get("name", ""))
+        if not name:
+            return
+
+        self.telemetry_definitions[name] = dict(definition)
+
+        # A value may have arrived just before its definition. Refresh the
+        # human-friendly columns without waiting for the next packet.
+        if name in self.telemetry_rows:
+            self._update_telemetry_identity(name)
+
+    def _telemetry_metadata(self, name: str) -> tuple[str, str, str]:
+        definition = self.telemetry_definitions.get(name, {})
+        fallback_group = name.split(".", 1)[0].replace("_", " ").title()
+        fallback_label = name.replace("_", " ").replace(".", " › ").title()
+        label = str(definition.get("label", fallback_label))
+        return (
+            str(definition.get("group", fallback_group)),
+            self.hardware_map.display_label(name, label),
+            str(definition.get("unit", "")),
+        )
+
+    def _update_telemetry_identity(self, name: str):
+        row = self.telemetry_rows[name]
+        group, label, unit = self._telemetry_metadata(name)
+        self.telemetry_table.setItem(row, 0, QTableWidgetItem(group))
+
+        signal_item = QTableWidgetItem(label)
+        signal_item.setToolTip(name)
+        self.telemetry_table.setItem(row, 1, signal_item)
+        self.telemetry_table.setItem(row, 3, QTableWidgetItem(unit))
+
+    @staticmethod
+    def _matrix_coordinates(name: str) -> tuple[int, int] | None:
+        prefix = "tof.array.r"
+        if not name.startswith(prefix):
+            return None
+        suffix = name[len(prefix):]
+        row_text, separator, column_text = suffix.partition("c")
+        if not separator or not row_text.isdigit() or not column_text.isdigit():
+            return None
+        row, column = int(row_text), int(column_text)
+        if not (0 <= row < 8 and 0 <= column < 8):
+            return None
+        return row, column
+
     def on_telemetry(
         self,
         name: str,
@@ -1879,14 +2071,25 @@ class RobotDebugGUI(QMainWindow):
             )
 
             if (
-                self.plot_signal_combo.findText(
+                self.plot_signal_combo.findData(
                     name
                 )
                 < 0
             ):
                 self.plot_signal_combo.addItem(
-                    name
+                    self.signal_display_name(name),
+                    name,
                 )
+
+        if self._matrix_coordinates(name) is not None:
+            # The 64 zones feed the depth camera rather than 64 dashboard
+            # rows. Their history above still makes every zone plottable.
+            return
+
+        if name == "tof.array_valid_zones":
+            # The firmware sends this straight after the 64 zones, so it
+            # marks a complete frame.
+            self.tof_view.notify_frame()
 
         if name not in self.telemetry_rows:
             row = (
@@ -1901,11 +2104,7 @@ class RobotDebugGUI(QMainWindow):
                 name
             ] = row
 
-            self.telemetry_table.setItem(
-                row,
-                0,
-                QTableWidgetItem(name),
-            )
+            self._update_telemetry_identity(name)
 
         row = self.telemetry_rows[
             name
@@ -1913,7 +2112,7 @@ class RobotDebugGUI(QMainWindow):
 
         self.telemetry_table.setItem(
             row,
-            1,
+            2,
             QTableWidgetItem(
                 self.format_value(
                     value
@@ -1923,7 +2122,7 @@ class RobotDebugGUI(QMainWindow):
 
         self.telemetry_table.setItem(
             row,
-            2,
+            4,
             QTableWidgetItem(
                 time.strftime(
                     "%H:%M:%S"
@@ -1935,6 +2134,9 @@ class RobotDebugGUI(QMainWindow):
     def format_value(
         value: Any,
     ) -> str:
+        if value is None:
+            return "INVALID"
+
         if isinstance(
             value,
             float,
@@ -1966,6 +2168,9 @@ class RobotDebugGUI(QMainWindow):
 
         self.clear_plots()
 
+        self.tof_view.reset()
+        self.colour_card.refresh(None)
+
         self.start_time = time.monotonic()
 
     # =================================================================
@@ -1974,8 +2179,16 @@ class RobotDebugGUI(QMainWindow):
 
     def add_selected_plot(self):
         name = (
-            self.plot_signal_combo.currentText()
+            self.plot_signal_combo.currentData()
         )
+
+        self.add_signal_to_plot(str(name or ""))
+
+    def plot_matrix_zone(self, name: str):
+        self.add_signal_to_plot(name)
+        self.tabs.setCurrentWidget(self.plot_page)
+
+    def add_signal_to_plot(self, name: str):
 
         if not name:
             return
@@ -1995,10 +2208,12 @@ class RobotDebugGUI(QMainWindow):
 
         self.plot_colour_index += 1
 
+        _, label, _ = self._telemetry_metadata(name)
+
         curve = self.plot_widget.plot(
             [],
             [],
-            name=name,
+            name=label,
             pen=pen,
         )
 
@@ -2006,8 +2221,13 @@ class RobotDebugGUI(QMainWindow):
             name
         ] = curve
 
+        # Show the human label, but keep the telemetry key on the item -
+        # the label can change under it when the wiring map is edited.
+        item = QListWidgetItem(label)
+        item.setData(Qt.ItemDataRole.UserRole, name)
+        item.setToolTip(name)
         self.active_plot_list.addItem(
-            name
+            item
         )
 
     def remove_selected_plot(self):
@@ -2016,7 +2236,7 @@ class RobotDebugGUI(QMainWindow):
         )
 
         for item in selected:
-            name = item.text()
+            name = item.data(Qt.ItemDataRole.UserRole) or item.text()
 
             curve = self.plot_curves.pop(
                 name,

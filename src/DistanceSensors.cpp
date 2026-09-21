@@ -3,7 +3,9 @@
 #include "sensors/VL53L0XSensor.h"
 #include "sensors/VL53L1XSensor.h"
 #include "sensors/MatrixLidarSensor.h"
+#if SERIAL_TOF_ENABLED
 #include "sensors/SerialTofSensor.h"
+#endif
 #include "sensors/IRDistanceSensor.h"
 #include "sensors/UltrasonicSensor.h"
 #include "sensors/SensorManager.h"
@@ -22,10 +24,12 @@ static VL53L1XSensor tofXshut2("tof_xshut2", &xshutExpander, XSHUT2_PIN, VL53L1X
 static VL53L1XSensor tofXshut3("tof_xshut3", &xshutExpander, XSHUT3_PIN, VL53L1X_ADDR_BASE + 1, &VL53_I2C_BUS);
 static VL53L1XSensor tofXshut4("tof_xshut4", &xshutExpander, XSHUT4_PIN, VL53L1X_ADDR_BASE + 2, &VL53_I2C_BUS);
 static VL53L1XSensor tofXshut5("tof_xshut5", &xshutExpander, XSHUT5_PIN, VL53L1X_ADDR_BASE + 3, &VL53_I2C_BUS);
-static VL53L0XSensor tofXshut6("tof_xshut6", &xshutExpander, XSHUT6_PIN, VL53L0X_ADDR_BASE + 2, &VL53_I2C_BUS);
+static VL53L1XSensor tofXshut6("tof_xshut6", &xshutExpander, XSHUT6_PIN, VL53L1X_ADDR_BASE + 4, &VL53_I2C_BUS);
 
 static MatrixLidarSensor tof8x8("tof_8x8", MATRIX_LIDAR_ADDR, &MATRIX_LIDAR_I2C_BUS);
-static SerialTofSensor tofSerial("tof_serial", Serial2, SERIAL_TOF_BAUD);
+#if SERIAL_TOF_ENABLED
+static SerialTofSensor tofSerial("tof_serial", SERIAL_TOF_PORT, SERIAL_TOF_BAUD);
+#endif
 
 static IRDistanceSensor ir0("ir_0", IR0_PIN);
 static IRDistanceSensor ir1("ir_1", IR1_PIN);
@@ -55,7 +59,9 @@ void distance_sensors_init() {
     sensorManager.addSensor(&tofXshut5);
     sensorManager.addSensor(&tofXshut6);
     sensorManager.addSensor(&tof8x8);
+#if SERIAL_TOF_ENABLED
     sensorManager.addSensor(&tofSerial);
+#endif
     sensorManager.addSensor(&ir0);
     sensorManager.addSensor(&ir1);
     sensorManager.addSensor(&ir2);
@@ -102,7 +108,9 @@ DistanceSensor* distance_sensor_get_by_index(unsigned char index) {
 
 unsigned short distance_sensors_8x8_min_mm() {
     uint16_t grid[MATRIX_LIDAR_GRID_SIZE];
-    tof8x8.getGrid(grid);
+    if (!distance_sensors_get_8x8_grid(grid)) {
+        return 0;
+    }
 
     uint16_t closest = 0;
     for (uint8_t i = 0; i < MATRIX_LIDAR_GRID_SIZE; i++) {
@@ -116,6 +124,14 @@ unsigned short distance_sensors_8x8_min_mm() {
         }
     }
     return closest;
+}
+
+bool distance_sensors_get_8x8_grid(unsigned short* buf) {
+    if (buf == nullptr || !tof8x8.isGridAvailable()) {
+        return false;
+    }
+    tof8x8.getGrid(buf);
+    return true;
 }
 
 void distance_sensors_print_8x8_grid() {

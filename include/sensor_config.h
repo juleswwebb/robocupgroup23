@@ -9,6 +9,13 @@
 
 #include <Wire.h>
 
+// 0x59/0x59 framed serial TOF sensor on Teensy Serial2 (RX2=D7, TX2=D8).
+// The debug application uses the Teensy's USB Serial connection, leaving this
+// hardware UART available for the sensor.
+#define SERIAL_TOF_ENABLED 1
+#define SERIAL_TOF_PORT Serial2
+#define SERIAL_TOF_BAUD 115200
+
 // The 7 VL53L0X/L1X sensors are on I2C bus 0 (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire
 // The 8x8 array is on I2C bus 1 (Wire1, pins 16/17) - confirmed by scanning.
@@ -27,18 +34,16 @@
 #define XSHUT3_PIN 3   // VL53L1X
 #define XSHUT4_PIN 4   // VL53L1X
 #define XSHUT5_PIN 5   // VL53L1X
-#define XSHUT6_PIN 6   // VL53L0X
+#define XSHUT6_PIN 6   // VL53L1X
 
 // I2C addresses assigned once each sensor is brought out of reset (7-bit).
 // 0x29 is every VL53L0X/L1X's shared power-on default and must never be
 // reused once other sensors have been addressed - that's the whole reason
 // for the one-at-a-time XSHUT bring-up sequence.
-#define VL53L0X_ADDR_BASE 0x30   // -> 0x30, 0x31, 0x32 for the 3 VL53L0X
-#define VL53L1X_ADDR_BASE 0x35   // -> 0x35..0x38 for the 4 VL53L1X
+#define VL53L0X_ADDR_BASE 0x30   // -> 0x30, 0x31 for the 2 VL53L0X
+#define VL53L1X_ADDR_BASE 0x35   // -> 0x35..0x39 for the 5 VL53L1X
 
 #define MATRIX_LIDAR_ADDR 0x33   // fixed by the DFRobot module itself
-
-#define SERIAL_TOF_BAUD 115200
 
 // 4 analog Sharp-style IR distance sensors (see IRDistanceSensor.h for the
 // distance conversion caveats).
