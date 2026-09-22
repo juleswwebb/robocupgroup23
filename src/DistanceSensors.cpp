@@ -7,7 +7,9 @@
 #include "sensors/SerialTofSensor.h"
 #endif
 #include "sensors/IRDistanceSensor.h"
+#if ULTRASONIC_ENABLED
 #include "sensors/UltrasonicSensor.h"
+#endif
 #include "sensors/SensorManager.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -36,8 +38,10 @@ static IRDistanceSensor ir1("ir_1", IR1_PIN);
 static IRDistanceSensor ir2("ir_2", IR2_PIN);
 static IRDistanceSensor ir3("ir_3", IR3_PIN);
 
+#if ULTRASONIC_ENABLED
 static UltrasonicSensor ultrasonic0("ultrasonic_0", ULTRASONIC0_TRIG_PIN, ULTRASONIC0_ECHO_PIN);
 static UltrasonicSensor ultrasonic1("ultrasonic_1", ULTRASONIC1_TRIG_PIN, ULTRASONIC1_ECHO_PIN);
+#endif
 
 static SensorManager sensorManager;
 
@@ -66,8 +70,10 @@ void distance_sensors_init() {
     sensorManager.addSensor(&ir1);
     sensorManager.addSensor(&ir2);
     sensorManager.addSensor(&ir3);
+#if ULTRASONIC_ENABLED
     sensorManager.addSensor(&ultrasonic0);
     sensorManager.addSensor(&ultrasonic1);
+#endif
 
     if (!sensorManager.beginAll()) {
         Serial.println("distance_sensors_init: one or more sensors failed to initialise");

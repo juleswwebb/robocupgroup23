@@ -37,6 +37,7 @@ private:
     const char* name_;
     DFRobot_MatrixLidar_I2C sensor_;
     uint16_t grid_[MATRIX_LIDAR_GRID_SIZE] = {0};
+    uint32_t lastPollMs_ = 0;
     bool lastReadOk_ = false;
     bool initialized_ = false;
 };

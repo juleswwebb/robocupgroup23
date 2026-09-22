@@ -5,25 +5,51 @@
 #include "Inductive.h"
 #include "Encoders.h"
 #include "ServoControl.h"
+#include "DriveControl.h"
+#include "sensor_config.h"
 #include "sensors.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <stdio.h>
 #include <string.h>
 
-// The desktop app and the text console share Teensy USB Serial. Console.cpp
-// owns line buffering and routes JSON lines here; entering JSON mode disables
-// the human-readable print tasks so protocol messages remain parseable.
-#define DEBUG_SERIAL Serial
+// USB Serial and the CH9143 on Serial1 carry the same protocol. One transport
+// is selected by the most recent hello/request from an app; all replies and
+// telemetry go back through that same transport.
+enum class DebugTransport : uint8_t { Usb, Bluetooth };
+static DebugTransport activeTransport = DebugTransport::Usb;
+static Print* protocolOutput = &Serial;
 
 #define TELEMETRY_INTERVAL_MIN_MS 20
 #define TELEMETRY_INTERVAL_MAX_MS 2000
+#define BLUETOOTH_TELEMETRY_MIN_MS 500
+#define BLUETOOTH_TX_BUFFER_SIZE 4096
+#define BLUETOOTH_TX_CHUNK_SIZE 20
 
 static bool jsonActive = false;
 static bool debugMode = false;
 static unsigned long telemetryIntervalMs = 100; // 10 Hz; USB CDC has ample room for the 8x8 frame
 static unsigned long lastTelemetryMs = 0;
+static unsigned long bluetoothRxMessages = 0;
 static DebugModeChangedHandler modeChangedHandler = nullptr;
+static char bluetoothTxBuffer[BLUETOOTH_TX_BUFFER_SIZE];
+
+static void select_transport(DebugTransport transport) {
+    activeTransport = transport;
+    protocolOutput = (transport == DebugTransport::Bluetooth)
+        ? static_cast<Print*>(&BLUETOOTH_PORT)
+        : static_cast<Print*>(&Serial);
+    if (transport == DebugTransport::Bluetooth &&
+        telemetryIntervalMs < BLUETOOTH_TELEMETRY_MIN_MS) {
+        telemetryIntervalMs = BLUETOOTH_TELEMETRY_MIN_MS;
+    }
+}
+
+static unsigned long active_telemetry_minimum_ms() {
+    return activeTransport == DebugTransport::Bluetooth
+        ? BLUETOOTH_TELEMETRY_MIN_MS
+        : TELEMETRY_INTERVAL_MIN_MS;
+}
 
 void debug_protocol_set_mode_changed_handler(DebugModeChangedHandler handler) {
     modeChangedHandler = handler;
@@ -48,16 +74,38 @@ bool debug_protocol_is_active() {
 // =====================================================================
 
 static void send(JsonDocument& doc) {
-    serializeJson(doc, DEBUG_SERIAL);
-    DEBUG_SERIAL.println();
+    if (activeTransport == DebugTransport::Bluetooth) {
+        const size_t required = measureJson(doc);
+        if (required >= sizeof(bluetoothTxBuffer)) {
+            return;
+        }
+        const size_t length = serializeJson(doc, bluetoothTxBuffer,
+                                            sizeof(bluetoothTxBuffer));
+        size_t offset = 0;
+        while (offset < length) {
+            const size_t remaining = length - offset;
+            const size_t chunkLength = remaining < BLUETOOTH_TX_CHUNK_SIZE
+                ? remaining : BLUETOOTH_TX_CHUNK_SIZE;
+            BLUETOOTH_PORT.write(
+                reinterpret_cast<const uint8_t*>(bluetoothTxBuffer + offset),
+                chunkLength);
+            offset += chunkLength;
+            if (offset < length) delay(3);
+        }
+        BLUETOOTH_PORT.write('\n');
+        BLUETOOTH_PORT.flush();
+        return;
+    }
+    serializeJson(doc, *protocolOutput);
+    protocolOutput->println();
 }
 
 void debug_protocol_log(const char* level, const char* message) {
     if (!jsonActive) {
-        DEBUG_SERIAL.print("[");
-        DEBUG_SERIAL.print(level);
-        DEBUG_SERIAL.print("] ");
-        DEBUG_SERIAL.println(message);
+        Serial.print("[");
+        Serial.print(level);
+        Serial.print("] ");
+        Serial.println(message);
         return;
     }
 
@@ -85,7 +133,7 @@ static void send_state() {
     JsonDocument doc;
     doc["type"] = "state";
     doc["debug_mode"] = debugMode;
-    doc["stopped"] = (servo_control_get_microseconds() == 1500);
+    doc["stopped"] = (servo_control_get_microseconds() == 1500 && !drive_control_is_active());
     doc["fault"] = false;
     doc["uptime_ms"] = millis();
     send(doc);
@@ -174,7 +222,20 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("inductive.count", "Detection count", "Inductive", "events");
     send_telemetry_definition("encoder.0", "Encoder 0 position", "Encoders", "counts");
     send_telemetry_definition("encoder.1", "Encoder 1 position", "Encoders", "counts");
+    send_telemetry_definition("encoder.0_a", "Encoder 0 channel A", "Encoders", "bool", false);
+    send_telemetry_definition("encoder.0_b", "Encoder 0 channel B", "Encoders", "bool", false);
+    send_telemetry_definition("encoder.0_edges", "Encoder 0 valid edges", "Encoders", "edges");
+    send_telemetry_definition("encoder.1_a", "Encoder 1 channel A", "Encoders", "bool", false);
+    send_telemetry_definition("encoder.1_b", "Encoder 1 channel B", "Encoders", "bool", false);
+    send_telemetry_definition("encoder.1_edges", "Encoder 1 valid edges", "Encoders", "edges");
     send_telemetry_definition("servo.us", "Servo command", "Actuators", "us");
+    send_telemetry_definition("drive.left_percent", "Left drive command", "Drive", "%");
+    send_telemetry_definition("drive.right_percent", "Right drive command", "Drive", "%");
+    send_telemetry_definition("drive.left_us", "Left drive pulse", "Drive", "us");
+    send_telemetry_definition("drive.right_us", "Right drive pulse", "Drive", "us");
+    send_telemetry_definition("drive.active", "Drive active", "Drive", "bool", false);
+    send_telemetry_definition("bluetooth.active", "Bluetooth transport active", "Communications", "bool", false);
+    send_telemetry_definition("bluetooth.rx_messages", "Bluetooth messages received", "Communications", "messages");
     send_telemetry_definition("system.uptime_ms", "Robot uptime", "System", "ms");
 }
 
@@ -193,10 +254,24 @@ static void send_definitions() {
         doc["description"] = "How often the robot sends a telemetry packet.";
         doc["datatype"] = "int";
         doc["value"] = (long)telemetryIntervalMs;
-        doc["min"] = TELEMETRY_INTERVAL_MIN_MS;
+        doc["min"] = active_telemetry_minimum_ms();
         doc["max"] = TELEMETRY_INTERVAL_MAX_MS;
         doc["step"] = 10;
         doc["unit"] = "ms";
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "parameter_definition";
+        doc["name"] = "drive.max_percent";
+        doc["label"] = "Drive speed limit";
+        doc["description"] = "Maximum permitted keyboard/test drive command. Firmware hard-caps this at 100%.";
+        doc["datatype"] = "int";
+        doc["value"] = drive_control_get_max_percent();
+        doc["min"] = 0;
+        doc["max"] = DRIVE_HARD_MAX_PERCENT;
+        doc["step"] = 5;
+        doc["unit"] = "%";
         send(doc);
     }
     {
@@ -211,6 +286,31 @@ static void send_definitions() {
         doc["max"] = 2000;
         doc["step"] = 10;
         doc["unit"] = "us";
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
+        doc["name"] = "drive_set";
+        doc["label"] = "Drive motors";
+        doc["description"] = "Left/right percent command. Requires Debug Mode; stops automatically after 300 ms without another command.";
+        JsonArray args = doc["args"].to<JsonArray>();
+        JsonObject left = args.add<JsonObject>();
+        left["name"] = "left";
+        left["label"] = "Left (%)";
+        left["type"] = "int";
+        left["min"] = -100;
+        left["max"] = 100;
+        left["step"] = 5;
+        left["default"] = 0;
+        JsonObject right = args.add<JsonObject>();
+        right["name"] = "right";
+        right["label"] = "Right (%)";
+        right["type"] = "int";
+        right["min"] = -100;
+        right["max"] = 100;
+        right["step"] = 5;
+        right["default"] = 0;
         send(doc);
     }
     {
@@ -402,8 +502,21 @@ void debug_protocol_send_telemetry() {
 
     data["encoder.0"] = encoder_get_position(0);
     data["encoder.1"] = encoder_get_position(1);
+    data["encoder.0_a"] = encoder_get_channel_a(0);
+    data["encoder.0_b"] = encoder_get_channel_b(0);
+    data["encoder.0_edges"] = encoder_get_transition_count(0);
+    data["encoder.1_a"] = encoder_get_channel_a(1);
+    data["encoder.1_b"] = encoder_get_channel_b(1);
+    data["encoder.1_edges"] = encoder_get_transition_count(1);
 
     data["servo.us"] = servo_control_get_microseconds();
+    data["drive.left_percent"] = drive_control_get_left_percent();
+    data["drive.right_percent"] = drive_control_get_right_percent();
+    data["drive.left_us"] = drive_control_get_left_microseconds();
+    data["drive.right_us"] = drive_control_get_right_microseconds();
+    data["drive.active"] = drive_control_is_active();
+    data["bluetooth.active"] = jsonActive && activeTransport == DebugTransport::Bluetooth;
+    data["bluetooth.rx_messages"] = (long)bluetoothRxMessages;
     data["system.uptime_ms"] = now;
 
     send(doc);
@@ -424,7 +537,7 @@ void debug_protocol_set_active(bool active) {
     }
 
     if (!active) {
-        DEBUG_SERIAL.println("debug protocol: JSON mode off; text output resumed");
+        protocolOutput->println("debug protocol: JSON mode off; text output resumed");
     }
 }
 
@@ -434,7 +547,8 @@ static void handle_command(JsonDocument& doc) {
     if (strcmp(command, "stop") == 0) {
         // Deliberately always allowed - a stop must never be gated.
         servo_control_set_speed(0);
-        debug_protocol_log("WARNING", "STOP: servo set to neutral");
+        drive_control_stop();
+        debug_protocol_log("WARNING", "STOP: all actuator outputs set to neutral");
         send_state();
 
     } else if (strcmp(command, "set_debug_mode") == 0) {
@@ -443,6 +557,7 @@ static void handle_command(JsonDocument& doc) {
                                              : "Debug mode disabled");
         if (!debugMode) {
             servo_control_set_speed(0); // don't leave an actuator running
+            drive_control_stop();
         }
         send_state();
 
@@ -461,6 +576,13 @@ static void handle_command(JsonDocument& doc) {
             servo_control_set_speed(doc["speed"] | 0);
         }
         send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
+
+    } else if (strcmp(command, "drive_set") == 0) {
+        if (!debugMode) {
+            send_error("drive_set requires debug mode");
+            return;
+        }
+        drive_control_set_percent(doc["left"] | 0, doc["right"] | 0);
 
     } else if (strcmp(command, "encoders_reset") == 0) {
         encoders_reset();
@@ -481,7 +603,7 @@ static void handle_parameter(JsonDocument& doc) {
     if (strcmp(name, "telemetry.interval_ms") == 0) {
         long requested = doc["value"] | (long)telemetryIntervalMs;
         telemetryIntervalMs = constrain(requested,
-                                        (long)TELEMETRY_INTERVAL_MIN_MS,
+                                        (long)active_telemetry_minimum_ms(),
                                         (long)TELEMETRY_INTERVAL_MAX_MS);
         // Echo the accepted value, not the requested one - the GUI needs to
         // see the clamped result so the two ends don't drift apart.
@@ -495,6 +617,14 @@ static void handle_parameter(JsonDocument& doc) {
         servo_control_set_microseconds(doc["value"] | 1500);
         send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
 
+    } else if (strcmp(name, "drive.max_percent") == 0) {
+        if (!debugMode) {
+            send_error("drive.max_percent requires debug mode");
+            return;
+        }
+        drive_control_set_max_percent(doc["value"] | DRIVE_DEFAULT_MAX_PERCENT);
+        send_parameter_value("drive.max_percent", drive_control_get_max_percent());
+
     } else {
         send_error("Unknown parameter");
     }
@@ -507,12 +637,18 @@ static void handle_parameter_request(JsonDocument& doc) {
         send_parameter_value("telemetry.interval_ms", (long)telemetryIntervalMs);
     } else if (strcmp(name, "servo.pulse_us") == 0) {
         send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
+    } else if (strcmp(name, "drive.max_percent") == 0) {
+        send_parameter_value("drive.max_percent", drive_control_get_max_percent());
     } else {
         send_error("Unknown parameter");
     }
 }
 
-void debug_protocol_handle_json(const char* json) {
+static void handle_json_from(const char* json, DebugTransport transport) {
+    // A newly received JSON message owns subsequent replies. This permits the
+    // same GUI to connect through either direct USB or the CH9143 COM port.
+    select_transport(transport);
+
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, json);
 
@@ -529,7 +665,9 @@ void debug_protocol_handle_json(const char* json) {
     if (strcmp(type, "hello") == 0) {
         // The GUI connecting is what flips us into JSON mode.
         debug_protocol_set_active(true);
-        debug_protocol_log("INFO", "Debug GUI connected");
+        debug_protocol_log("INFO", transport == DebugTransport::Bluetooth
+            ? "Debug GUI connected over Bluetooth Serial1"
+            : "Debug GUI connected over USB Serial");
         send_state();
 
     } else if (strcmp(type, "request_definitions") == 0) {
@@ -548,4 +686,13 @@ void debug_protocol_handle_json(const char* json) {
     } else {
         send_error("Unknown message type");
     }
+}
+
+void debug_protocol_handle_json(const char* json) {
+    handle_json_from(json, DebugTransport::Usb);
+}
+
+void debug_protocol_handle_bluetooth_json(const char* json) {
+    bluetoothRxMessages++;
+    handle_json_from(json, DebugTransport::Bluetooth);
 }

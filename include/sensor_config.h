@@ -9,12 +9,41 @@
 
 #include <Wire.h>
 
-// 0x59/0x59 framed serial TOF sensor on Teensy Serial2 (RX2=D7, TX2=D8).
-// The debug application uses the Teensy's USB Serial connection, leaving this
-// hardware UART available for the sensor.
-#define SERIAL_TOF_ENABLED 1
+// CH9143 matched Bluetooth serial bridge on Teensy Serial1.
+// Serial1 pins: RX1=D0, TX1=D1. The bridge is transparent: the desktop app
+// uses exactly the same newline-delimited JSON protocol over its virtual COM
+// port as it does over the Teensy's direct USB Serial port.
+#define BLUETOOTH_ENABLED 1
+#define BLUETOOTH_PORT Serial1
+#define BLUETOOTH_BAUD 115200
+
+// Serial2 (RX2=D7, TX2=D8) is now the left/right drive ESC connector. A UART
+// peripheral and Servo PWM cannot safely share those pins, so the old serial
+// TOF is deliberately disabled until it is moved to another hardware serial
+// port and these values are changed together.
+#define SERIAL_TOF_ENABLED 0
 #define SERIAL_TOF_PORT Serial2
 #define SERIAL_TOF_BAUD 115200
+
+// Main drive ESC / continuous-rotation-servo outputs on the connector labelled
+// Serial2: RX2 D7 = left, TX2 D8 = right. Swap the two defines if the robot's
+// physical left/right orientation proves opposite. 1050/1500/1950 us comes
+// from the supplied working motor test sketch. The command watchdog makes both
+// outputs neutral after 300 ms without a fresh command.
+#define DRIVE_LEFT_PIN 7
+#define DRIVE_RIGHT_PIN 8
+// The installed ESC/motor direction is opposite the app's logical convention:
+// a positive pulse previously drove the robot backwards. Keep the app/API
+// convention intuitive (positive = forward) by reversing both outputs here.
+#define DRIVE_LEFT_REVERSED 1
+#define DRIVE_RIGHT_REVERSED 1
+#define DRIVE_MIN_US 1050
+#define DRIVE_NEUTRAL_US 1500
+#define DRIVE_MAX_US 1950
+#define DRIVE_US_PER_PERCENT 4.5f
+#define DRIVE_COMMAND_TIMEOUT_MS 300
+#define DRIVE_HARD_MAX_PERCENT 100
+#define DRIVE_DEFAULT_MAX_PERCENT 35
 
 // The 7 VL53L0X/L1X sensors are on I2C bus 0 (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire
@@ -52,8 +81,10 @@
 #define IR2_PIN A8
 #define IR3_PIN A9
 
-// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54). This exact
-// pairing (30/31, 32/33) matches the previous year's working robot.
+// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54). D30-D33 are
+// currently reassigned to the wheel encoders, so leave ultrasonic support
+// disabled until the HC-SR04s have a different non-conflicting connector.
+#define ULTRASONIC_ENABLED 0
 #define ULTRASONIC0_TRIG_PIN 30
 #define ULTRASONIC0_ECHO_PIN 31
 #define ULTRASONIC1_TRIG_PIN 32
@@ -69,11 +100,14 @@
 // LJ18A3-8-Z/BY inductive proximity sensor (metal detection).
 #define INDUCTIVE_PIN A0
 
-// Quadrature encoders, D2-D5. Interrupts on channel A only per encoder.
-#define ENCODER0_PIN_A 2
-#define ENCODER0_PIN_B 3
-#define ENCODER1_PIN_A 4
-#define ENCODER1_PIN_B 5
+// Quadrature encoders, reassigned to D30-D33. Both channels are decoded:
+// encoder 0 = D30 (A) / D31 (B), encoder 1 = D32 (A) / D33 (B).
+// Internal pull-ups keep an open-collector/disconnected input at HIGH.
+#define ENCODER0_PIN_A 30
+#define ENCODER0_PIN_B 31
+#define ENCODER1_PIN_A 32
+#define ENCODER1_PIN_B 33
+#define ENCODER_USE_INTERNAL_PULLUPS 1
 
 // Servo test connector (labelled "SERIAL7" - D28/D29 double as Serial7
 // RX/TX, but here they're just being used as plain PWM outputs). Not sure

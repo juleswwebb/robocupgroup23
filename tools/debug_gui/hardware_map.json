@@ -2,6 +2,11 @@
   "version": 1,
   "devices": [
     {
+      "name": "CH9143 Bluetooth",
+      "kind": "bluetooth",
+      "port": "serial1"
+    },
+    {
       "name": "Top_Left",
       "kind": "vl53l0x",
       "port": "xshut0"
@@ -33,7 +38,7 @@
     },
     {
       "name": "Front_Top_Left",
-      "kind": "vl53l0x",
+      "kind": "vl53l1x",
       "port": "xshut6"
     },
     {
@@ -42,19 +47,14 @@
       "port": "wire1_0x33"
     },
     {
-      "name": "Serial ToF",
-      "kind": "serial_tof",
-      "port": "serial2"
+      "name": "Left drive ESC",
+      "kind": "motor",
+      "port": "drive_left"
     },
     {
-      "name": "Ultrasonic 0",
-      "kind": "ultrasonic",
-      "port": "ultrasonic_30_31"
-    },
-    {
-      "name": "Ultrasonic 1",
-      "kind": "ultrasonic",
-      "port": "ultrasonic_32_33"
+      "name": "Right drive ESC",
+      "kind": "motor",
+      "port": "drive_right"
     },
     {
       "name": "Colour sensor",
@@ -79,12 +79,12 @@
     {
       "name": "Encoder 0",
       "kind": "encoder",
-      "port": "encoder_2_3"
+      "port": "encoder_30_31"
     },
     {
       "name": "Encoder 1",
       "kind": "encoder",
-      "port": "encoder_4_5"
+      "port": "encoder_32_33"
     },
     {
       "name": "Servo",

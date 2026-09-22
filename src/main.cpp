@@ -28,6 +28,7 @@
 #include "Inductive.h"
 #include "Encoders.h"
 #include "ServoControl.h"
+#include "DriveControl.h"
 #include "Console.h"
 #include "DebugProtocol.h"
 
@@ -55,6 +56,7 @@
 // Polled fast; the protocol self-paces to its own telemetry.interval_ms
 // parameter, which the GUI can retune live.
 #define DEBUG_PROTOCOL_UPDATE_PERIOD         10
+#define DRIVE_CONTROL_UPDATE_PERIOD           10
 
 // Single knob for how often sensor readings get printed to Serial - turn
 // this up if the monitor is scrolling faster than you can read. This is
@@ -89,6 +91,7 @@
 #define SERVO_CONTROL_NUM_EXECUTE          -1
 #define CONSOLE_NUM_EXECUTE                -1
 #define DEBUG_PROTOCOL_NUM_EXECUTE         -1
+#define DRIVE_CONTROL_NUM_EXECUTE          -1
 #define ENCODERS_NUM_EXECUTE               -1
 
 // Pin definitions
@@ -99,6 +102,13 @@
 
 Servo right_motor;
 Servo left_motor;
+
+#if BLUETOOTH_ENABLED
+// Persistent extra Serial1 RX storage. The CH9143 can deliver commands while
+// the Teensy is transmitting a large telemetry frame; the default UART buffer
+// is too small for that burst.
+static uint8_t bluetoothRxBuffer[2048];
+#endif
 
 //**********************************************************************************
 // Task Scheduler and Tasks
@@ -156,6 +166,9 @@ Task tUpdate_console(CONSOLE_UPDATE_PERIOD, CONSOLE_NUM_EXECUTE, &console_update
 
 // Task for the JSON debug protocol used by tools/debug_gui (see DebugProtocol.h/.cpp)
 Task tUpdate_debug_protocol(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXECUTE, &debug_protocol_update);
+// Enforces the short command watchdog that makes the drive outputs neutral
+// if the GUI connection or a keyboard event disappears.
+Task tUpdate_drive_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drive_control_update);
 
 Scheduler taskManager;
 
@@ -172,6 +185,8 @@ Scheduler taskManager;
 //   servo speed <-100..100> - set speed as a percentage (0 = stop)
 //   servo angle <0-180>   - set a position (for a positional servo)
 //   servo stop            - shorthand for "servo speed 0"
+//   drive <left> <right>  - command both main drive motors (-100..100)
+//   drive stop            - neutral both main drive motors
 //   help                  - show this list
 //
 // The Python debug console (tools/debug_gui) talks JSON over this same
@@ -214,31 +229,35 @@ static void on_debug_json_mode_changed(bool json_active) {
 }
 
 static void print_console_help() {
-  Serial.println("Commands:");
-  Serial.println("  mode sensors            - show all sensor debug prints (default)");
-  Serial.println("  mode test               - hide sensor prints, just show servo state");
-  Serial.println("  servo us <500-2500>     - set the servo's raw pulse width directly");
-  Serial.println("  servo speed <-100..100> - set speed as a percentage (0 = stop)");
-  Serial.println("  servo angle <0-180>     - set a position (for a positional servo)");
-  Serial.println("  servo stop              - shorthand for \"servo speed 0\"");
-  Serial.println("  help                    - show this list");
+  Print& out = console_output();
+  out.println("Commands:");
+  out.println("  mode sensors            - show all sensor debug prints (default)");
+  out.println("  mode test               - hide sensor prints, just show servo state");
+  out.println("  servo us <500-2500>     - set the servo's raw pulse width directly");
+  out.println("  servo speed <-100..100> - set speed as a percentage (0 = stop)");
+  out.println("  servo angle <0-180>     - set a position (for a positional servo)");
+  out.println("  servo stop              - shorthand for \"servo speed 0\"");
+  out.println("  drive <left> <right>    - main drive motors, -100 to 100");
+  out.println("  drive stop              - neutral both main drive motors");
+  out.println("  help                    - show this list");
 }
 
 static void handle_console_command(const char* command, const char* args) {
+  Print& out = console_output();
   if (strcmp(command, "mode") == 0) {
     if (strcmp(args, "test") == 0) {
       testMode = true;
       set_sensor_debug_prints_enabled(false);
-      Serial.println("mode: test (sensor prints hidden, servo prints still shown)");
+      out.println("mode: test (sensor prints hidden, servo prints still shown)");
     } else if (strcmp(args, "sensors") == 0) {
       testMode = false;
       // Also drops JSON mode, so this is the way back to readable output
       // if the debug GUI disconnected without saying goodbye.
       debug_protocol_set_active(false);
       set_sensor_debug_prints_enabled(true);
-      Serial.println("mode: sensors (all debug prints shown)");
+      out.println("mode: sensors (all debug prints shown)");
     } else {
-      Serial.println("usage: mode <sensors|test>");
+      out.println("usage: mode <sensors|test>");
     }
   } else if (strcmp(command, "servo") == 0) {
     // Manual split on the first space instead of sscanf("%s %d", ...) -
@@ -261,14 +280,31 @@ static void handle_console_command(const char* command, const char* args) {
     } else if (strcmp(sub, "stop") == 0) {
       servo_control_set_speed(0);
     } else {
-      Serial.println("usage: servo <us|speed|angle> <value>   or   servo stop");
+      out.println("usage: servo <us|speed|angle> <value>   or   servo stop");
     }
-    servo_control_print();
+    out.print("servo_control: ");
+    out.print(servo_control_get_microseconds());
+    out.println(" us");
+  } else if (strcmp(command, "drive") == 0) {
+    if (strcmp(args, "stop") == 0) {
+      drive_control_stop();
+    } else {
+      const char* separator = strchr(args, ' ');
+      if (separator == nullptr) {
+        out.println("usage: drive <left> <right>   or   drive stop");
+        return;
+      }
+      drive_control_set_percent(atoi(args), atoi(separator + 1));
+    }
+    out.print("drive: left=");
+    out.print(drive_control_get_left_percent());
+    out.print(" right=");
+    out.println(drive_control_get_right_percent());
   } else if (strcmp(command, "help") == 0) {
     print_console_help();
   } else {
-    Serial.print("unknown command: ");
-    Serial.println(command);
+    out.print("unknown command: ");
+    out.println(command);
     print_console_help();
   }
 }
@@ -285,6 +321,10 @@ void task_init();
 //**********************************************************************************
 void setup() {
   Serial.begin(BAUD_RATE);
+#if BLUETOOTH_ENABLED
+  BLUETOOTH_PORT.addMemoryForRead(bluetoothRxBuffer, sizeof(bluetoothRxBuffer));
+  BLUETOOTH_PORT.begin(BLUETOOTH_BAUD);
+#endif
   pin_init();
   robot_init();
   distance_sensors_init(); // brings up Wire + all TOF sensors
@@ -294,8 +334,12 @@ void setup() {
   inductive_init();        // brings up the inductive proximity sensor pin
   encoders_init();         // brings up the encoder pins + interrupts
   servo_control_init();    // attaches the D28/D29 servo test pins
+  drive_control_init();    // D7/D8 drive ESCs; starts safely at neutral
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
+#if BLUETOOTH_ENABLED
+  console_set_bluetooth_json_handler(&debug_protocol_handle_bluetooth_json);
+#endif
   console_init();
 
   debug_protocol_set_mode_changed_handler(&on_debug_json_mode_changed);
@@ -332,6 +376,12 @@ void task_init() {
   taskManager.init();
 
   // Add tasks to the scheduler
+  // Safety and communications run first on every scheduler pass. If a sensor
+  // driver is slow or faulty, STOP/drive watchdog and app commands must still
+  // be serviced before entering that driver.
+  taskManager.addTask(tUpdate_drive_control);
+  taskManager.addTask(tUpdate_console);
+  taskManager.addTask(tUpdate_debug_protocol);
   //
   // The stub modules (ultrasonic/infrared/colour/motors/weights/base) don't
   // have real logic yet - just a Serial.println placeholder each - so
@@ -360,8 +410,6 @@ void task_init() {
   taskManager.addTask(tPrint_inductive);
   taskManager.addTask(tPrint_encoders);
   taskManager.addTask(tPrint_servo_control);
-  taskManager.addTask(tUpdate_console);
-  taskManager.addTask(tUpdate_debug_protocol);
 
   // Enable the tasks
   taskManager.enableAll();

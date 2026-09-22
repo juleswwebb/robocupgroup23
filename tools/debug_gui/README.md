@@ -1,7 +1,8 @@
 # Robot Debug Console
 
 Live telemetry, plotting, tuning and session recording for the robot. The app
-currently talks newline-delimited JSON directly over Teensy USB Serial. Full
+talks the same newline-delimited JSON over direct Teensy USB Serial or the
+matched CH9143 Bluetooth serial bridge. Full
 protocol spec:
 [`docs/communicationProtocol.md`](../../docs/communicationProtocol.md).
 
@@ -25,8 +26,9 @@ python DataAnalysisCLI.py summary Data/SomeRun.rdbg   # headless analysis
 **Important:** close the PlatformIO serial monitor before connecting the GUI.
 Only one program can hold the serial port at a time.
 
-In `DebugGUI.py`: pick the Teensy USB port (`/dev/cu.usbmodem*` on macOS,
-`COMx` on Windows), leave baud at 115200, and hit **Connect**. The firmware
+In `DebugGUI.py`: pick either the Teensy USB port or the CH9143 receiver's
+virtual serial port (`/dev/cu.usbmodem*` on macOS, `COMx` on Windows), leave
+baud at 115200, and hit **Connect**. Firmware upload still requires USB. The firmware
 detects the GUI's `hello` message, silences text prints and starts JSON
 telemetry on that same port.
 
@@ -45,6 +47,8 @@ Telemetry signals (sent at 10 Hz by default in one grouped packet):
 | `inductive.*` | `detected`, `count` |
 | `encoder.*` | `0`, `1` |
 | `servo.*` | `us` |
+| `drive.*` | `left_percent`, `right_percent`, `left_us`, `right_us`, `active` |
+| `bluetooth.*` | `active`, `rx_messages` |
 | `system.*` | `uptime_ms` |
 
 A sensor that failed to initialise (or has nothing in range) is sent as JSON
@@ -58,9 +62,10 @@ numeric live value is also automatically available in the **Plots** tab.
 
 Commands (Commands tab / Dashboard):
 
-- `stop` — servo to neutral. Always allowed.
+- `stop` — every actuator to neutral. Always allowed.
 - `set_debug_mode` — gate the actuator commands below.
 - `servo_set` — `us` / `speed` / `angle`. Debug mode only.
+- `drive_set` — independent left/right main-drive percentages. Debug mode only.
 - `encoders_reset` — zero both encoder counts.
 - `set_text_mode` — drop back to human-readable serial output.
 
@@ -68,9 +73,34 @@ Parameters (Parameters tab, live-tunable):
 
 - `telemetry.interval_ms` — how often telemetry packets are sent.
 - `servo.pulse_us` — servo pulse width.
+- `drive.max_percent` — main-drive test speed limit (hard-capped at 100%).
+
+The Dashboard has a dedicated **Keyboard Drive** panel. Enable Debug Mode,
+arm the panel, click the app window, then use **W/S** or **↑/↓** for
+forward/reverse and **A/D** or **←/→** to turn. Space or releasing every drive
+key sends neutral. The Teensy
+also makes both drive outputs neutral after 300 ms without a new command.
 
 Adding a new signal only needs a firmware change (add it to the telemetry
 packet in `src/DebugProtocol.cpp`); the GUI discovers it automatically.
+
+## Transport test suite
+
+`RobotProtocolTest.py` performs a non-moving end-to-end check of one or more
+ports. It verifies handshake, every expected sensor/ToF key, definitions,
+parameter round-trips, STOP, Debug Mode, and zero-speed drive/servo commands.
+
+```bash
+python RobotProtocolTest.py --list
+python RobotProtocolTest.py /dev/cu.usbmodem145902401 \
+  /dev/cu.usbmodemWCH285EB3TS11
+```
+
+If USB passes but the CH9143 port receives zero messages, connect over USB and
+inspect `bluetooth.rx_messages`. Zero after a Bluetooth probe means the Teensy
+never received the app's `hello`: check radio power/pairing and crossed wiring
+(CH9143 TX -> Teensy RX1 D0, CH9143 RX -> Teensy TX1 D1). Firmware upload
+always remains USB-only.
 
 ## Appearance
 

@@ -90,6 +90,7 @@ KINDS: dict[str, DeviceKind] = {
         DeviceKind("vl53l1x", "VL53L1X ToF", "xshut"),
         DeviceKind("tof_8x8", "8×8 ToF array", "i2c"),
         DeviceKind("serial_tof", "Serial ToF", "uart"),
+        DeviceKind("bluetooth", "CH9143 Bluetooth bridge", "uart"),
         DeviceKind("ir", "IR distance", "pin"),
         DeviceKind("ultrasonic", "Ultrasonic", "ultrasonic"),
         DeviceKind("colour", "Colour sensor", "i2c"),
@@ -98,7 +99,7 @@ KINDS: dict[str, DeviceKind] = {
         DeviceKind("inductive", "Inductive proximity", "pin"),
         DeviceKind("encoder", "Wheel encoder", "encoder"),
         DeviceKind("servo", "Servo", "pwm"),
-        DeviceKind("motor", "Drive motor", None),
+        DeviceKind("motor", "Drive motor / ESC", "drive"),
         DeviceKind("other", "Other", None),
     )
 }
@@ -112,6 +113,7 @@ PORT_TYPE_LABELS = {
     "spi": "SPI",
     "encoder": "Encoder pairs",
     "pwm": "PWM",
+    "drive": "Drive ESC PWM",
 }
 
 
@@ -121,7 +123,7 @@ def _build_ports() -> list[Port]:
     # Seven VL53s, reset lines on the SX1509 - not Teensy GPIO - and all
     # sharing I2C bus 0. Which type sits on which line is fixed in
     # DistanceSensors.cpp.
-    vl53_types = ["vl53l0x", "vl53l0x", "vl53l1x", "vl53l1x", "vl53l1x", "vl53l1x", "vl53l0x"]
+    vl53_types = ["vl53l0x", "vl53l0x", "vl53l1x", "vl53l1x", "vl53l1x", "vl53l1x", "vl53l1x"]
     for n, expects in enumerate(vl53_types):
         ports.append(Port(
             f"xshut{n}", f"XSHUT{n}  ·  SX1509 IO{n}", "xshut",
@@ -166,13 +168,25 @@ def _build_ports() -> list[Port]:
     uarts = {1: (0, 1), 2: (7, 8), 3: (15, 14), 4: (16, 17),
              5: (21, 20), 6: (25, 24), 7: (28, 29), 8: (34, 35)}
     for n, (rx, tx) in uarts.items():
-        is_read = n == 2
+        # Serial2's D7/D8 pins are PWM drive outputs in this configuration;
+        # its former serial ToF is disabled in sensor_config.h.
+        is_read = n == 1
         ports.append(Port(
             f"serial{n}", f"Serial{n}  ·  RX {rx} / TX {tx}", "uart",
-            signals=(("tof.serial", "Distance"),) if is_read else (),
-            expects="serial_tof" if is_read else None,
+            signals=(("bluetooth.active", "Active"),
+                     ("bluetooth.rx_messages", "RX messages")) if is_read else (),
+            expects="bluetooth" if is_read else None,
             pins=(f"D{rx}", f"D{tx}"),
         ))
+
+    ports.extend((
+        Port("drive_left", "Left drive ESC  ·  D7 (RX2)", "drive",
+             signals=(("drive.left_percent", "Command"), ("drive.left_us", "Pulse")),
+             expects="motor", pins=("D7",)),
+        Port("drive_right", "Right drive ESC  ·  D8 (TX2)", "drive",
+             signals=(("drive.right_percent", "Command"), ("drive.right_us", "Pulse")),
+             expects="motor", pins=("D8",)),
+    ))
 
     # A0-A13 are D14-D27 on the Teensy 4.0.
     for n in range(14):
@@ -190,13 +204,6 @@ def _build_ports() -> list[Port]:
             signals=signals, expects=expects, pins=(f"D{digital}",),
         ))
 
-    for index, (trig, echo) in enumerate(((30, 31), (32, 33))):
-        ports.append(Port(
-            f"ultrasonic_{trig}_{echo}", f"D{trig} trig / D{echo} echo", "ultrasonic",
-            signals=((f"ultrasonic.{index}", "Distance"),),
-            expects="ultrasonic", pins=(f"D{trig}", f"D{echo}"),
-        ))
-
     ports.append(Port(
         "spi_cs10", "SPI  ·  CS 10 (MOSI 11 / MISO 12 / SCK 13)", "spi",
         signals=(("flow.dx", "ΔX"), ("flow.dy", "ΔY"),
@@ -204,7 +211,10 @@ def _build_ports() -> list[Port]:
         expects="optical_flow", pins=("D10", "D11", "D12", "D13"), bus="spi",
     ))
 
-    for index, (a, b) in enumerate(((2, 3), (4, 5))):
+    # D30-D33 are dedicated to the two quadrature encoders.  The ultrasonic
+    # feature is presently disabled in sensor_config.h because it previously
+    # occupied these same pins.
+    for index, (a, b) in enumerate(((30, 31), (32, 33))):
         ports.append(Port(
             f"encoder_{a}_{b}", f"D{a} A / D{b} B", "encoder",
             signals=((f"encoder.{index}", "Position"),),
@@ -252,23 +262,23 @@ class Device:
 def default_devices() -> list[Device]:
     """The wiring sensor_config.h currently assumes, with plain names."""
     devices = [
-        Device(f"ToF XSHUT{n}", "vl53l0x" if n in (0, 1, 6) else "vl53l1x", f"xshut{n}")
+        Device(f"ToF XSHUT{n}", "vl53l0x" if n in (0, 1) else "vl53l1x", f"xshut{n}")
         for n in range(7)
     ]
     devices += [
+        Device("CH9143 Bluetooth", "bluetooth", "serial1"),
         Device("8×8 ToF array", "tof_8x8", "wire1_0x33"),
-        Device("Serial ToF", "serial_tof", "serial2"),
+        Device("Left drive ESC", "motor", "drive_left"),
+        Device("Right drive ESC", "motor", "drive_right"),
     ]
     devices += [Device(f"IR {n}", "ir", f"a{n + 6}") for n in range(4)]
     devices += [
-        Device("Ultrasonic 0", "ultrasonic", "ultrasonic_30_31"),
-        Device("Ultrasonic 1", "ultrasonic", "ultrasonic_32_33"),
         Device("Colour sensor", "colour", "wire1_0x29"),
         Device("IMU", "imu", "wire1_0x28"),
         Device("Optical flow", "optical_flow", "spi_cs10"),
         Device("Inductive sensor", "inductive", "a0"),
-        Device("Encoder 0", "encoder", "encoder_2_3"),
-        Device("Encoder 1", "encoder", "encoder_4_5"),
+        Device("Encoder 0", "encoder", "encoder_30_31"),
+        Device("Encoder 1", "encoder", "encoder_32_33"),
         Device("Servo", "servo", "d28"),
     ]
     return devices

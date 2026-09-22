@@ -30,6 +30,7 @@ void debug_protocol_update();
 
 // Process one complete JSON line routed here by Console.
 void debug_protocol_handle_json(const char* json);
+void debug_protocol_handle_bluetooth_json(const char* json);
 
 // Send one grouped telemetry packet. Call periodically from a scheduled
 // task; does nothing unless JSON mode is active.

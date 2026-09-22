@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import QEvent, Qt, QSettings, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -321,6 +322,9 @@ class RobotDebugGUI(QMainWindow):
         self.dashboard_command_widgets = {}
         self.plot_curves = {}
         self.plot_colour_index = 0
+        self.drive_keys: set[int] = set()
+        self.drive_command_available = False
+        self.robot_debug_mode = False
 
         # Recording metadata / parameter snapshot support.
         self.parameter_definitions = {}
@@ -377,6 +381,12 @@ class RobotDebugGUI(QMainWindow):
             self.refresh_colour_card
         )
         self.colour_timer.start(100)
+
+        # Fresh drive commands are sent while a key is held. The firmware has
+        # its own 300 ms timeout as the final protection if this app stalls.
+        self.drive_keepalive_timer = QTimer(self)
+        self.drive_keepalive_timer.timeout.connect(self._send_keyboard_drive)
+        self.drive_keepalive_timer.start(100)
 
         self.apply_device_names()
 
@@ -1013,6 +1023,41 @@ class RobotDebugGUI(QMainWindow):
             stop_group
         )
 
+        drive_group = QGroupBox("Keyboard Drive")
+        drive_layout = QVBoxLayout(drive_group)
+
+        self.drive_arm_checkbox = QCheckBox("Arm keyboard drive")
+        self.drive_arm_checkbox.setEnabled(False)
+        drive_layout.addWidget(self.drive_arm_checkbox)
+
+        drive_hint = QLabel(
+            "Click this window, then use W/S or ↑/↓ to drive and A/D or ←/→ to turn. "
+            "Release all keys or press Space to stop. Debug Mode is required."
+        )
+        drive_hint.setWordWrap(True)
+        drive_hint.setObjectName("hint")
+        drive_layout.addWidget(drive_hint)
+
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Speed limit"))
+        self.drive_speed_slider = QSlider(Qt.Orientation.Horizontal)
+        self.drive_speed_slider.setRange(5, 100)
+        self.drive_speed_slider.setSingleStep(5)
+        self.drive_speed_slider.setValue(35)
+        self.drive_speed_slider.setEnabled(False)
+        speed_row.addWidget(self.drive_speed_slider, 1)
+        self.drive_speed_label = QLabel("35%")
+        self.drive_speed_label.setMinimumWidth(36)
+        speed_row.addWidget(self.drive_speed_label)
+        drive_layout.addLayout(speed_row)
+
+        self.drive_status_label = QLabel("DISARMED")
+        self.drive_status_label.setObjectName("statusPill")
+        theme.set_pill_state(self.drive_status_label, "")
+        drive_layout.addWidget(self.drive_status_label)
+
+        command_panel_layout.addWidget(drive_group)
+
         self.dashboard_command_scroll = QScrollArea()
 
         self.dashboard_command_scroll.setWidgetResizable(
@@ -1063,6 +1108,125 @@ class RobotDebugGUI(QMainWindow):
             page,
             "Dashboard",
         )
+
+    # =================================================================
+    # Keyboard drive
+    # =================================================================
+
+    DRIVE_KEYS = {
+        Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D,
+        Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+    }
+
+    def _drive_controls_available(self) -> bool:
+        return (
+            self.bluetooth.is_connected()
+            and self.drive_command_available
+            and self.robot_debug_mode
+        )
+
+    def _update_drive_controls(self):
+        available = self._drive_controls_available()
+        self.drive_arm_checkbox.setEnabled(available)
+        self.drive_speed_slider.setEnabled(available)
+
+        if not available:
+            self._set_drive_armed(False)
+            if not self.drive_command_available:
+                text = "WAITING FOR DRIVE CONTROL"
+            elif not self.bluetooth.is_connected():
+                text = "DISCONNECTED"
+            else:
+                text = "ENABLE DEBUG MODE"
+            self.drive_status_label.setText(text)
+            theme.set_pill_state(self.drive_status_label, "")
+
+    def _set_drive_armed(self, armed: bool):
+        if not armed and self.drive_keys:
+            self.drive_keys.clear()
+            self._send_drive_stop()
+        self.drive_arm_checkbox.blockSignals(True)
+        self.drive_arm_checkbox.setChecked(armed)
+        self.drive_arm_checkbox.blockSignals(False)
+
+    def _on_drive_armed_changed(self, armed: bool):
+        if armed and not self._drive_controls_available():
+            self._set_drive_armed(False)
+            return
+        if not armed:
+            self.drive_keys.clear()
+            self._send_drive_stop()
+            self.drive_status_label.setText("DISARMED")
+            theme.set_pill_state(self.drive_status_label, "")
+        else:
+            self.drive_status_label.setText("ARMED — RELEASE KEYS TO STOP")
+            theme.set_pill_state(self.drive_status_label, "busy")
+            self.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _on_drive_speed_changed(self, value: int):
+        self.drive_speed_label.setText(f"{value}%")
+        if self._drive_controls_available():
+            self.bluetooth.set_parameter("drive.max_percent", value)
+
+    def _keyboard_drive_values(self) -> tuple[int, int]:
+        speed = self.drive_speed_slider.value()
+        forward = Qt.Key.Key_W in self.drive_keys or Qt.Key.Key_Up in self.drive_keys
+        reverse = Qt.Key.Key_S in self.drive_keys or Qt.Key.Key_Down in self.drive_keys
+        turn_right = Qt.Key.Key_D in self.drive_keys or Qt.Key.Key_Right in self.drive_keys
+        turn_left = Qt.Key.Key_A in self.drive_keys or Qt.Key.Key_Left in self.drive_keys
+        linear = int(forward) - int(reverse)
+        turn = int(turn_right) - int(turn_left)
+        return (
+            max(-speed, min(speed, (linear + turn) * speed)),
+            max(-speed, min(speed, (linear - turn) * speed)),
+        )
+
+    def _send_keyboard_drive(self):
+        if not self._drive_controls_available() or not self.drive_arm_checkbox.isChecked():
+            return
+        left, right = self._keyboard_drive_values()
+        self.bluetooth.send_command("drive_set", left=left, right=right)
+        if left == 0 and right == 0:
+            self.drive_status_label.setText("ARMED — STOPPED")
+            theme.set_pill_state(self.drive_status_label, "ok")
+        else:
+            self.drive_status_label.setText(f"DRIVING  L {left:+d}%  R {right:+d}%")
+            theme.set_pill_state(self.drive_status_label, "busy")
+
+    def _send_drive_stop(self):
+        if self.bluetooth.is_connected() and self.drive_command_available:
+            self.bluetooth.send_command("drive_set", left=0, right=0)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key.Key_Space and self.drive_arm_checkbox.isChecked():
+            self.drive_keys.clear()
+            self._send_keyboard_drive()
+            event.accept()
+            return
+        if key in self.DRIVE_KEYS and self.drive_arm_checkbox.isChecked():
+            self.drive_keys.add(key)
+            self._send_keyboard_drive()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        key = event.key()
+        if key in self.DRIVE_KEYS and self.drive_arm_checkbox.isChecked():
+            self.drive_keys.discard(key)
+            self._send_keyboard_drive()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def changeEvent(self, event):
+        # Never keep a drive key logically held after the user alt-tabs away.
+        if event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow():
+            if self.drive_keys:
+                self.drive_keys.clear()
+                self._send_drive_stop()
+        super().changeEvent(event)
 
     # =================================================================
     # Plots
@@ -1616,6 +1780,9 @@ class RobotDebugGUI(QMainWindow):
             )
         )
 
+        self.drive_arm_checkbox.toggled.connect(self._on_drive_armed_changed)
+        self.drive_speed_slider.valueChanged.connect(self._on_drive_speed_changed)
+
         self.refresh_definitions_button.clicked.connect(
             self.bluetooth.request_definitions
         )
@@ -1905,8 +2072,12 @@ class RobotDebugGUI(QMainWindow):
                 "SYSTEM",
                 f"Connected to {port}",
             )
+            self._update_drive_controls()
 
         else:
+            self.robot_debug_mode = False
+            self._set_drive_armed(False)
+            self._update_drive_controls()
             if self.recorder.is_recording:
                 self.stop_recording()
 
@@ -2495,6 +2666,10 @@ class RobotDebugGUI(QMainWindow):
         if not name:
             return
 
+        if name == "drive_set":
+            self.drive_command_available = True
+            self._update_drive_controls()
+
         if name not in self.command_widgets:
             command_widget = CommandWidget(
                 definition,
@@ -2634,9 +2809,10 @@ class RobotDebugGUI(QMainWindow):
             state
         )
 
-        debug_enabled = state.get(
-            "debug_mode"
-        )
+        debug_enabled = state.get("debug_mode")
+        if debug_enabled is not None:
+            self.robot_debug_mode = bool(debug_enabled)
+            self._update_drive_controls()
 
         if debug_enabled is True:
             self.statusBar().showMessage(
@@ -2674,6 +2850,7 @@ class RobotDebugGUI(QMainWindow):
         if self.recorder.is_recording:
             self.stop_recording()
 
+        self._set_drive_armed(False)
         self.bluetooth.disconnect_port()
 
         event.accept()

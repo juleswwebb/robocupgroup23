@@ -2,7 +2,8 @@
 //         Console.h
 //************************************
 //
-// Reads newline-terminated commands from Serial (non-blocking - just call
+// Reads newline-terminated commands from USB Serial and, when enabled,
+// Serial1 Bluetooth (non-blocking - just call
 // console_update() every scheduler tick) and dispatches them to whatever
 // handler main.cpp registers. Console itself knows nothing about sensors,
 // modes, or the servo; it's just a generic line reader + dispatcher, so
@@ -14,6 +15,8 @@
 
 #ifndef CONSOLE_H_
 #define CONSOLE_H_
+
+#include <Arduino.h>
 
 // command: the first whitespace-separated token, lowercased.
 // args: everything after the command (may be empty string, never NULL).
@@ -27,6 +30,12 @@ void console_set_command_handler(ConsoleCommandHandler handler);
 typedef void (*ConsoleJsonHandler)(const char* json);
 
 void console_set_json_handler(ConsoleJsonHandler handler);
+void console_set_bluetooth_json_handler(ConsoleJsonHandler handler);
+
+// Output stream associated with the command currently being dispatched.
+// This lets typed commands reply over the same USB/Bluetooth link they arrived
+// on. Only use it synchronously from the registered command handler.
+Print& console_output();
 
 // Call once from setup(), after Serial.begin().
 void console_init();

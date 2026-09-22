@@ -13,6 +13,9 @@ bool MatrixLidarSensor::begin() {
     const uint8_t maxAttempts = 5;
     for (uint8_t attempt = 1; attempt <= maxAttempts; attempt++) {
         if (sensor_.begin() == 0 && sensor_.setRangingMode(eMatrix_8X8) == 0) {
+            // The vendor default is 8 seconds. A missed frame must never stall
+            // the console, drive watchdog, or Bluetooth link for that long.
+            sensor_.setTimeout(150);
             initialized_ = true;
             return true;
         }
@@ -30,6 +33,14 @@ void MatrixLidarSensor::update() {
     if (!initialized_) {
         return; // never came up - don't block the scheduler on a dead sensor
     }
+
+    // The array does not produce a fresh 8x8 frame every 20 ms. Polling it at
+    // the manager rate overwhelms the module and makes timeouts much likelier.
+    const uint32_t now = millis();
+    if (now - lastPollMs_ < 100) {
+        return;
+    }
+    lastPollMs_ = now;
     lastReadOk_ = (sensor_.getAllData(grid_) == 0);
 }
 

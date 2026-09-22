@@ -2,12 +2,9 @@
 //         EncoderSensor.h
 //************************************
 //
-// Quadrature encoder, interrupt-driven on channel A only (checks B's
-// current state to determine direction on each A edge) - same simplified
-// quadrature decode as the reference sketch this was ported from. This
-// gives 2x counts per detent instead of a full 4x decode (which would
-// interrupt on both channels), but that's enough for basic dead-reckoning
-// and matches what's already proven working.
+// Quadrature encoder with a full 4x state-table decoder. Both channels use
+// CHANGE interrupts: each legal A/B state transition adds one signed count.
+// Same-state bounce and impossible diagonal jumps are ignored.
 
 #ifndef ENCODER_SENSOR_H_
 #define ENCODER_SENSOR_H_
@@ -22,19 +19,22 @@ public:
 
     bool begin();
 
-    long getPosition() const { return position_; }
+    long getPosition() const;
     void resetPosition();
     const char* getName() const { return name_; }
+    bool getChannelA() const;
+    bool getChannelB() const;
+    unsigned long getTransitionCount() const;
 
 private:
-    void handleChannelAEdge(); // called from the ISR trampoline for this instance's slot
+    void handleEdge(); // called from either ISR trampoline for this instance
 
     const char* name_;
     uint8_t pinA_;
     uint8_t pinB_;
     volatile long position_ = 0;
-    volatile bool aSet_ = false;
-    volatile bool bSet_ = false;
+    volatile uint8_t lastState_ = 0;
+    volatile unsigned long transitionCount_ = 0;
 
     // attachInterrupt() needs a plain function pointer, so each live
     // instance is assigned one of a small fixed set of trampoline
@@ -42,10 +42,14 @@ private:
     uint8_t isrSlot_;
     static EncoderSensor* instances_[ENCODER_MAX_INSTANCES];
     static uint8_t instanceCount_;
-    static void isrTrampoline0();
-    static void isrTrampoline1();
-    static void isrTrampoline2();
-    static void isrTrampoline3();
+    static void isrTrampoline0A();
+    static void isrTrampoline0B();
+    static void isrTrampoline1A();
+    static void isrTrampoline1B();
+    static void isrTrampoline2A();
+    static void isrTrampoline2B();
+    static void isrTrampoline3A();
+    static void isrTrampoline3B();
 };
 
 #endif /* ENCODER_SENSOR_H_ */

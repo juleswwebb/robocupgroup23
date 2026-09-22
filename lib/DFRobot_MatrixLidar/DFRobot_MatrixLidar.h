@@ -71,6 +71,9 @@ public:
    */
   uint16_t getFixedPointData(uint8_t x, uint8_t y);
 
+  /** Bound how long a missing response may block the cooperative scheduler. */
+  void setTimeout(uint32_t timeoutMs) { _timeout = timeoutMs; }
+
 protected:
   /**
    * @fn recvPacket

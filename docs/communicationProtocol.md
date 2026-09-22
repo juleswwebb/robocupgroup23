@@ -18,9 +18,9 @@ The GUI does not need to know whether the serial connection is:
 
 As long as both ends exchange the same newline-delimited JSON messages at the same baud rate, the higher-level protocol remains the same.
 
-The current Group 23 deployment uses the Teensy's direct USB Serial port. The
-Bluetooth bridge is deferred for now; it can be revisited later without
-changing the JSON message format.
+The current Group 23 deployment supports both the Teensy's direct USB Serial
+port and the matched CH9143 bridge on Teensy Serial1. The JSON message format
+and all GUI features are identical on both; only firmware upload requires USB.
 
 The current Python application consists of:
 
@@ -114,13 +114,17 @@ The baud rate can also be selected from the GUI.
 
 ## 1.2 Current Group 23 wiring
 
-The JSON protocol and human-readable test console share Teensy USB `Serial`.
-`Console.cpp` buffers each line and routes lines beginning with `{` to
-`DebugProtocol.cpp`. A GUI `hello` switches the firmware into JSON mode and
-disables text print tasks; `set_text_mode` reverses that transition.
+The JSON protocol and human-readable test console accept input from Teensy USB
+`Serial` and CH9143 `Serial1`. `Console.cpp` buffers both inputs independently
+and routes lines beginning with `{` to `DebugProtocol.cpp`. A GUI `hello`
+selects its source as the reply/telemetry transport and disables text print
+tasks; `set_text_mode` reverses that transition.
 
-Teensy `Serial2` (RX2 D7, TX2 D8) is again reserved for the framed serial TOF
-sensor. Bluetooth is not part of the current active data path.
+Teensy `Serial1` uses RX1 D0 and TX1 D1 for the CH9143 at 115200 baud. CH9143
+TX crosses to RX1 and CH9143 RX crosses to TX1. Teensy `Serial2` pins (RX2 D7,
+TX2 D8) are currently PWM outputs for the left
+and right drive ESCs, respectively. The serial TOF is therefore disabled: UART
+and PWM must never share the same pins.
 
 ---
 
