@@ -6,6 +6,7 @@
 #include "Encoders.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
+#include "Navigation.h"
 #include "Console.h"
 #include "sensor_config.h"
 #include "sensors.h"
@@ -225,6 +226,13 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("drive.left_us", "Left drive pulse", "Drive", "us");
     send_telemetry_definition("drive.right_us", "Right drive pulse", "Drive", "us");
     send_telemetry_definition("drive.active", "Drive active", "Drive", "bool", false);
+    send_telemetry_definition("navigation.active", "Navigation active", "Navigation", "bool", false);
+    send_telemetry_definition("navigation.state", "Navigation state", "Navigation", "state", false);
+    send_telemetry_definition("navigation.stop_reason", "Navigation status detail", "Navigation", "text", false);
+    send_telemetry_definition("navigation.front_mm", "Forward clearance", "Navigation", "mm");
+    send_telemetry_definition("navigation.left_mm", "Left clearance", "Navigation", "mm");
+    send_telemetry_definition("navigation.right_mm", "Right clearance", "Navigation", "mm");
+    send_telemetry_definition("navigation.target_heading", "Turn target", "Navigation", "deg");
     send_telemetry_definition("bluetooth.active", "Bluetooth transport active", "Communications", "bool", false);
     send_telemetry_definition("bluetooth.rx_bytes", "Bluetooth raw bytes received", "Communications", "bytes");
     send_telemetry_definition("bluetooth.rx_lines", "Bluetooth newline frames received", "Communications", "lines");
@@ -251,6 +259,39 @@ static void send_definitions() {
         doc["max"] = TELEMETRY_INTERVAL_MAX_MS;
         doc["step"] = 10;
         doc["unit"] = "ms";
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "parameter_definition";
+        doc["name"] = "navigation.speed_percent";
+        doc["label"] = "Navigation forward speed";
+        doc["description"] = "Autonomous forward command; capped at 60% until calibrated.";
+        doc["datatype"] = "int";
+        doc["value"] = navigation_get_speed_percent();
+        doc["min"] = 5; doc["max"] = 60; doc["step"] = 5; doc["unit"] = "%";
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "parameter_definition";
+        doc["name"] = "navigation.turn_percent";
+        doc["label"] = "Navigation turn speed";
+        doc["description"] = "Differential command used during obstacle turns.";
+        doc["datatype"] = "int";
+        doc["value"] = navigation_get_turn_percent();
+        doc["min"] = 5; doc["max"] = 60; doc["step"] = 5; doc["unit"] = "%";
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "parameter_definition";
+        doc["name"] = "navigation.front_stop_mm";
+        doc["label"] = "Navigation obstacle distance";
+        doc["description"] = "Turn when the centre of the 8x8 view is closer than this.";
+        doc["datatype"] = "int";
+        doc["value"] = navigation_get_front_stop_mm();
+        doc["min"] = 100; doc["max"] = 1500; doc["step"] = 25; doc["unit"] = "mm";
         send(doc);
     }
     {
@@ -304,6 +345,19 @@ static void send_definitions() {
         right["max"] = 100;
         right["step"] = 5;
         right["default"] = 0;
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
+        doc["name"] = "navigation_set";
+        doc["label"] = "Autonomous navigation";
+        doc["description"] = "Start/stop conservative 8x8 TOF obstacle navigation. Start requires Debug Mode, valid IMU and valid forward range.";
+        JsonObject arg = doc["args"].to<JsonArray>().add<JsonObject>();
+        arg["name"] = "enabled";
+        arg["label"] = "Enabled";
+        arg["type"] = "bool";
+        arg["default"] = false;
         send(doc);
     }
     {
@@ -518,6 +572,16 @@ void debug_protocol_send_telemetry() {
     data["drive.left_us"] = drive_control_get_left_microseconds();
     data["drive.right_us"] = drive_control_get_right_microseconds();
     data["drive.active"] = drive_control_is_active();
+    data["navigation.active"] = navigation_is_active();
+    data["navigation.state"] = navigation_get_state_name();
+    data["navigation.stop_reason"] = navigation_get_stop_reason();
+    if (navigation_get_front_mm()) data["navigation.front_mm"] = navigation_get_front_mm();
+    else data["navigation.front_mm"] = nullptr;
+    if (navigation_get_left_mm()) data["navigation.left_mm"] = navigation_get_left_mm();
+    else data["navigation.left_mm"] = nullptr;
+    if (navigation_get_right_mm()) data["navigation.right_mm"] = navigation_get_right_mm();
+    else data["navigation.right_mm"] = nullptr;
+    data["navigation.target_heading"] = navigation_get_target_heading();
     data["bluetooth.active"] = jsonActive && activeTransport == DebugTransport::Bluetooth;
     data["bluetooth.rx_bytes"] = (long)console_bluetooth_rx_bytes();
     data["bluetooth.rx_lines"] = (long)console_bluetooth_rx_lines();
@@ -553,6 +617,7 @@ static void handle_command(JsonDocument& doc) {
         // Deliberately always allowed - a stop must never be gated.
         servo_control_set_speed(0);
         drive_control_stop();
+        navigation_stop("Emergency stop");
         debug_protocol_log("WARNING", "STOP: all actuator outputs set to neutral");
         send_state();
 
@@ -563,6 +628,7 @@ static void handle_command(JsonDocument& doc) {
         if (!debugMode) {
             servo_control_set_speed(0); // don't leave an actuator running
             drive_control_stop();
+            navigation_stop("Debug mode disabled");
         }
         send_state();
 
@@ -587,7 +653,20 @@ static void handle_command(JsonDocument& doc) {
             send_error("drive_set requires debug mode");
             return;
         }
+        navigation_stop("Manual drive command");
         drive_control_set_percent(doc["left"] | 0, doc["right"] | 0);
+
+    } else if (strcmp(command, "navigation_set") == 0) {
+        const bool enabled = doc["enabled"] | false;
+        if (enabled && !debugMode) {
+            send_error("navigation_set requires debug mode");
+            return;
+        }
+        if (!navigation_set_enabled(enabled)) {
+            send_error(navigation_get_stop_reason());
+        } else {
+            debug_protocol_log("INFO", enabled ? "Navigation started" : "Navigation stopped");
+        }
 
     } else if (strcmp(command, "encoders_reset") == 0) {
         encoders_reset();
@@ -637,6 +716,16 @@ static void handle_parameter(JsonDocument& doc) {
         drive_control_set_max_percent(doc["value"] | DRIVE_DEFAULT_MAX_PERCENT);
         send_parameter_value("drive.max_percent", drive_control_get_max_percent());
 
+    } else if (strcmp(name, "navigation.speed_percent") == 0) {
+        navigation_set_speed_percent(doc["value"] | 30);
+        send_parameter_value(name, navigation_get_speed_percent());
+    } else if (strcmp(name, "navigation.turn_percent") == 0) {
+        navigation_set_turn_percent(doc["value"] | 25);
+        send_parameter_value(name, navigation_get_turn_percent());
+    } else if (strcmp(name, "navigation.front_stop_mm") == 0) {
+        navigation_set_front_stop_mm(doc["value"] | 300);
+        send_parameter_value(name, navigation_get_front_stop_mm());
+
     } else {
         send_error("Unknown parameter");
     }
@@ -651,6 +740,12 @@ static void handle_parameter_request(JsonDocument& doc) {
         send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
     } else if (strcmp(name, "drive.max_percent") == 0) {
         send_parameter_value("drive.max_percent", drive_control_get_max_percent());
+    } else if (strcmp(name, "navigation.speed_percent") == 0) {
+        send_parameter_value(name, navigation_get_speed_percent());
+    } else if (strcmp(name, "navigation.turn_percent") == 0) {
+        send_parameter_value(name, navigation_get_turn_percent());
+    } else if (strcmp(name, "navigation.front_stop_mm") == 0) {
+        send_parameter_value(name, navigation_get_front_stop_mm());
     } else {
         send_error("Unknown parameter");
     }

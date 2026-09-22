@@ -68,6 +68,7 @@ from DataRecorder import DataRecorder
 from colour_view import ColourCard
 from tof_view import TofView
 from wiring import HardwareMap, WiringPanel
+from arena_view import ArenaView
 
 
 
@@ -825,6 +826,7 @@ class RobotDebugGUI(QMainWindow):
         self._build_dashboard_tab()
         self._build_plot_tab()
         self._build_matrix_tab()
+        self._build_arena_tab()
         self._build_wiring_tab()
         self._build_parameter_tab()
         self._build_command_tab()
@@ -1392,6 +1394,25 @@ class RobotDebugGUI(QMainWindow):
         )
         self.tof_view.zone_plot_requested.connect(self.plot_matrix_zone)
         self.tabs.addTab(self.tof_view, "8×8 TOF")
+
+    # =================================================================
+    # Arena map / navigation
+    # =================================================================
+
+    def _build_arena_tab(self):
+        self.arena_view = ArenaView(
+            self.settings,
+            self.hardware_map,
+        )
+        self.arena_view.command_requested.connect(self.execute_command)
+        self.arena_view.parameter_requested.connect(self._set_arena_parameter)
+        self.tabs.addTab(self.arena_view, "Arena View")
+
+    def _set_arena_parameter(self, name: str, value: Any):
+        self.parameter_values[name] = value
+        self.recorder.record_parameter(name, value)
+        self.bluetooth.set_parameter(name, value)
+        self.add_log("TX", f"{name} = {value}")
 
     # =================================================================
     # Wiring
@@ -2206,6 +2227,11 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry[
             name
         ] = value
+
+        # ArenaView groups all signals sharing one robot timestamp into a
+        # coherent pose/range frame. Feed it before matrix zones are hidden
+        # from the large dashboard table below.
+        self.arena_view.receive_telemetry(name, value, robot_timestamp)
 
         if (
             isinstance(

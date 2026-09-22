@@ -27,6 +27,7 @@
 #include "IMU.h"
 #include "Inductive.h"
 #include "Encoders.h"
+#include "Navigation.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
 #include "Console.h"
@@ -94,6 +95,8 @@
 #define DEBUG_PROTOCOL_NUM_EXECUTE         -1
 #define DRIVE_CONTROL_NUM_EXECUTE          -1
 #define ENCODERS_NUM_EXECUTE               -1
+#define NAVIGATION_UPDATE_PERIOD            50
+#define NAVIGATION_NUM_EXECUTE              -1
 
 // Pin definitions
 #define IO_POWER  49
@@ -172,6 +175,7 @@ Task tUpdate_debug_protocol(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXE
 // Enforces the short command watchdog that makes the drive outputs neutral
 // if the GUI connection or a keyboard event disappears.
 Task tUpdate_drive_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drive_control_update);
+Task tUpdate_navigation(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &navigation_update);
 
 Scheduler taskManager;
 
@@ -341,6 +345,7 @@ void setup() {
   encoders_init();         // brings up the encoder pins + interrupts
   servo_control_init();    // attaches the D28/D29 servo test pins
   drive_control_init();    // D7/D8 drive ESCs; starts safely at neutral
+  navigation_init();       // autonomous navigation remains disabled at boot
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
 #if BLUETOOTH_ENABLED
@@ -388,6 +393,7 @@ void task_init() {
   taskManager.addTask(tUpdate_drive_control);
   taskManager.addTask(tUpdate_console);
   taskManager.addTask(tUpdate_debug_protocol);
+  taskManager.addTask(tUpdate_navigation);
   //
   // The stub modules (ultrasonic/infrared/colour/motors/weights/base) don't
   // have real logic yet - just a Serial.println placeholder each - so

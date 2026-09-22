@@ -3,14 +3,14 @@
 **Snapshot date:** 22 September 2026
 **Target:** Teensy 4.0 at 600 MHz using Arduino and PlatformIO  
 **Branch:** `main`  
-**Base commit:** `4b1b577` (`FIXED GUIS THEMING`)  
+**Base commit:** `dd38a2e` (`Remap wheel encoders to D2-D5`)
 **Remote state:** local telemetry/application integration changes are not yet committed  
 
 ## Purpose
 
 This is the living technical reference for the Group 23 Robocup project. It records what is implemented, how data moves between modules, the current wiring assumptions, what has been verified on hardware, and what is still incomplete. Update it whenever wiring, addresses, task periods, protocol fields, or subsystem status changes.
 
-The project currently has a working modular sensor and debug foundation. The Teensy firmware builds successfully, the Python tools compile, most sensor drivers have been integrated, and live telemetry can be transported as newline-delimited JSON. Manual main-drive control is implemented with a safety watchdog and keyboard control; autonomous behaviour and closed-loop speed control are still incomplete. Several hardware paths also need revalidation, especially the shared `Wire1` bus and the wheel encoders.
+The project currently has a working modular sensor and debug foundation. The Teensy firmware builds successfully, the Python tools compile, most sensor drivers have been integrated, and live telemetry can be transported as newline-delimited JSON. Manual main-drive control is implemented with a safety watchdog and keyboard control. A first safety-gated autonomous obstacle navigator and local Arena View now exist, but both require physical calibration and controlled testing before competition use.
 
 ## Current repository state
 
@@ -347,11 +347,11 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 
 1. **The `Wire1` hardware path needs revalidation.** The 8x8 array, colour sensor and BNO055 share this bus. They worked at different stages, but later the 8x8 became invalid and colour values became zero. A failure affecting all three points first to shared SDA, SCL, power, ground, or connector integrity rather than three independent driver failures.
 2. **Ultrasonic sensing is parked.** D30--D33 are available after moving the encoders, but the ultrasonic feature remains disabled until its power and echo-voltage issues are resolved.
-3. **Encoder counts need revalidation after rewiring.** The encoder board now uses the direct Digital Raw 2 inputs D2/D3 and D4/D5, matching Group 7 and the supplied example. In the GUI, verify raw A/B levels toggle, then valid-edge and signed position counts change.
+3. **Encoders work after replacing the CPU board.** The encoder board uses the direct Digital Raw 2 inputs D2/D3 and D4/D5. Both raw A/B transitions and signed counts have been observed. Encoder distance scale and left/right polarity still require measured calibration.
 4. **The servo signal pin is still ambiguous.** Driving both D28 and D29 works for testing but consumes two pins and prevents `Serial7` use. Identify the actual signal conductor and drive only that pin.
 5. **The serial TOF is intentionally offline.** Its D7/D8 Serial2 connector now carries PWM to the main-drive ESCs. Do not re-enable `SERIAL_TOF_ENABLED` unless the drive motors are moved to different pins.
 6. **The colour read blocks the cooperative scheduler.** Its approximately 50 ms integration call runs every 60 ms, so nominal 20 ms tasks cannot maintain their requested timing. Consider a non-blocking register read strategy or reduce the read rate when timing becomes important.
-7. **USB and Bluetooth passed the automated live protocol suite on 22 September 2026.** The root Bluetooth fault was that `src/main.cpp` used `#if BLUETOOTH_ENABLED` without including `sensor_config.h`; the preprocessor therefore compiled out `Serial1.begin()`, the RX/TX buffer installation and the Bluetooth handler registration. `Console.cpp` still compiled its polling path because that separate translation unit did include the configuration, which made the failure look like a dead UART. Adding the direct include fixed it. Bluetooth then received 152 JSON messages, 17 telemetry packets, 114 signal definitions and seven commands; USB subsequently passed with 148 JSON messages, 13 telemetry packets, 114 definitions and seven commands. Both runs completed handshake, telemetry, parameter round-trips, state and safe zero-speed command tests.
+7. **USB and Bluetooth passed the automated live protocol suite on 22 September 2026.** After the later CPU-board replacement USB remains verified, but the CH9143 path currently needs power/connection revalidation: USB reports zero Serial1 RX bytes and a forced Serial1 probe did not reach the computer-side CH9143 port. The firmware configuration remains Serial1 RX1/D0 and TX1/D1 at 115200 baud.
 8. **Unsolicited Serial1 output is deliberately disabled.** A startup beacon could stall the cooperative scheduler when the radio path was unavailable. Bluetooth transmits only after receiving the app's `hello`, so an absent radio cannot stall sensors, STOP handling, or USB telemetry.
 9. **Documentation naming is slightly inconsistent.** The actual centre-zone telemetry key is `tof.8x8`; older GUI documentation refers to `tof.array_centre`.
 10. **Robot behaviour modules are still inherited stubs.** Do not mistake successful compilation for autonomous readiness.
@@ -429,3 +429,22 @@ pip install --force-reinstall --no-cache-dir "PyQt6==6.11.0" "PyQt6-Qt6==6.11.0"
 When the project changes, update this document if any of these changed: a physical pin or connector; an I2C address or bus; a sensor model or quantity; a scheduler period; a telemetry key, parameter, or command; a confirmed hardware status; an unresolved fault; a build result; or a module implementation status.
 
 Keep observed hardware results separate from code completion. A driver can compile without the wiring being correct, and a sensor can work electrically without its data yet being useful to the robot.
+ARENA VIEW AND NAVIGATION
+-------------------------
+- `tools/debug_gui/arena_view.py` adds a live local arena map inspired by the
+  proven architecture in Group 7, adapted to Group 23 telemetry names and
+  hardware rather than modifying or depending on Group 7's repository.
+- The map combines `encoder.0`, `encoder.1` and `imu.heading` for local pose,
+  plots all `tof.xshut0` through `tof.xshut6` rays, and reduces the 64
+  `tof.array.rNcN` zones into eight horizontal 8x8 TOF rays.
+- Every range sensor has persistent robot-relative X/right, Y/forward and
+  angle controls. Encoder scales, polarity, wheel track, matrix FOV and matrix
+  mirroring are also stored in QSettings.
+- `Navigation.cpp` supplies a conservative, disabled-at-boot controller. It
+  drives forward, requires two blocked centre-8x8 frames before avoidance,
+  chooses the clearer matrix side, and performs a BNO055-controlled 90-degree
+  turn. It stops on sensor loss or turn timeout.
+- Navigation requires app Debug Mode and valid IMU/8x8 data. Global STOP,
+  Debug Mode exit and manual keyboard drive always cancel navigation.
+- These defaults are intentionally uncalibrated. Measure encoder mm/count,
+  wheel track and every sensor pose before treating map geometry as physical.

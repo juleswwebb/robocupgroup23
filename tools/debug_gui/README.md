@@ -67,6 +67,27 @@ Commands (Commands tab / Dashboard):
 - `servo_set` — `us` / `speed` / `angle`. Debug mode only.
 - `drive_set` — independent left/right main-drive percentages. Debug mode only.
 - `encoders_reset` — zero both encoder counts.
+- `navigation_set` — start/stop the safety-gated autonomous navigator. Starting
+  requires Debug Mode, a valid BNO055 reading and a valid forward 8×8 range.
+
+## Arena View
+
+The **Arena View** tab consumes the same live telemetry over USB or Bluetooth
+and builds a local robot-centred map. It provides:
+
+- encoder/BNO055 odometry, robot trail and heading;
+- point-TOF and 8×8 range rays with accumulated obstacle endpoints;
+- persistent position and aim controls for every installed TOF sensor;
+- separate left/right encoder scale, direction and wheel-track calibration;
+- pan/zoom controls and a resettable local origin;
+- navigation start/stop and live tuning for speed, turn speed and forward
+  obstacle distance.
+
+This is local dead reckoning, not absolute arena localisation. Calibrate the
+encoders and physically verify every sensor pose before using the map for
+navigation. Autonomous navigation is disabled at boot and the global STOP,
+manual drive, Debug Mode exit, invalid IMU, missing range data and turn timeout
+all return the drive outputs to neutral.
 - `set_text_mode` — drop back to human-readable serial output.
 
 Parameters (Parameters tab, live-tunable):
