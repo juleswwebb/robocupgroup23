@@ -211,10 +211,9 @@ def _build_ports() -> list[Port]:
         expects="optical_flow", pins=("D10", "D11", "D12", "D13"), bus="spi",
     ))
 
-    # D30-D33 are dedicated to the two quadrature encoders.  The ultrasonic
-    # feature is presently disabled in sensor_config.h because it previously
-    # occupied these same pins.
-    for index, (a, b) in enumerate(((30, 31), (32, 33))):
+    # The encoder board is on Digital Raw 2: D2/D3 and D4/D5. These are direct,
+    # input-capable Teensy pins rather than the D30-D33 level-shifted outputs.
+    for index, (a, b) in enumerate(((2, 3), (4, 5))):
         ports.append(Port(
             f"encoder_{a}_{b}", f"D{a} A / D{b} B", "encoder",
             signals=((f"encoder.{index}", "Position"),),
@@ -277,8 +276,8 @@ def default_devices() -> list[Device]:
         Device("IMU", "imu", "wire1_0x28"),
         Device("Optical flow", "optical_flow", "spi_cs10"),
         Device("Inductive sensor", "inductive", "a0"),
-        Device("Encoder 0", "encoder", "encoder_30_31"),
-        Device("Encoder 1", "encoder", "encoder_32_33"),
+        Device("Encoder 0", "encoder", "encoder_2_3"),
+        Device("Encoder 1", "encoder", "encoder_4_5"),
         Device("Servo", "servo", "d28"),
     ]
     return devices

@@ -81,9 +81,8 @@
 #define IR2_PIN A8
 #define IR3_PIN A9
 
-// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54). D30-D33 are
-// currently reassigned to the wheel encoders, so leave ultrasonic support
-// disabled until the HC-SR04s have a different non-conflicting connector.
+// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54). These remain
+// disabled because their hardware/power path has not yet been validated.
 #define ULTRASONIC_ENABLED 0
 #define ULTRASONIC0_TRIG_PIN 30
 #define ULTRASONIC0_ECHO_PIN 31
@@ -100,13 +99,14 @@
 // LJ18A3-8-Z/BY inductive proximity sensor (metal detection).
 #define INDUCTIVE_PIN A0
 
-// Quadrature encoders, reassigned to D30-D33. Both channels are decoded:
-// encoder 0 = D30 (A) / D31 (B), encoder 1 = D32 (A) / D33 (B).
-// Internal pull-ups keep an open-collector/disconnected input at HIGH.
-#define ENCODER0_PIN_A 30
-#define ENCODER0_PIN_B 31
-#define ENCODER1_PIN_A 32
-#define ENCODER1_PIN_B 33
+// Quadrature encoders on the input-capable Digital Raw 2 connector, matching
+// the supplied encoder example and Group 7's verified wiring. Both channels
+// are decoded: encoder 0 = D2/D3 and encoder 1 = D4/D5.
+// Internal pull-ups support open-collector as well as 3.3 V push-pull outputs.
+#define ENCODER0_PIN_A 2
+#define ENCODER0_PIN_B 3
+#define ENCODER1_PIN_A 4
+#define ENCODER1_PIN_B 5
 #define ENCODER_USE_INTERNAL_PULLUPS 1
 
 // Servo test connector (labelled "SERIAL7" - D28/D29 double as Serial7

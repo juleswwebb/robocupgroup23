@@ -79,12 +79,12 @@
     {
       "name": "Encoder 0",
       "kind": "encoder",
-      "port": "encoder_30_31"
+      "port": "encoder_2_3"
     },
     {
       "name": "Encoder 1",
       "kind": "encoder",
-      "port": "encoder_32_33"
+      "port": "encoder_4_5"
     },
     {
       "name": "Servo",
