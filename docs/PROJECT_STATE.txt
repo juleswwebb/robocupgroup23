@@ -27,11 +27,11 @@ The project currently has a working modular sensor and debug foundation. The Tee
 Verification performed for this snapshot:
 
 - `platformio run`: **passed**
-- Flash code: 107,864 bytes
-- RAM1 variables: 29,088 bytes
+- Flash code/data/headers: 108,824 / 21,096 / 8,316 bytes
+- RAM1 variables: 40,384 bytes; RAM2 variables: 12,416 bytes
 - Python `py_compile` over `tools/debug_gui/*.py`: **passed**
-- Hardware test: **USB protocol passed live; CH9143 opens but the Teensy receives zero Bluetooth messages**
-- Working tree note: USB telemetry, full 8x8 GUI integration, GUI theming and this documentation are local, uncommitted changes.
+- Hardware test: **USB and CH9143 Bluetooth both pass the complete live protocol suite**
+- Snapshot includes the verified USB/Bluetooth protocol integration and its standalone CH9143 diagnostic firmware.
 
 ## System architecture
 
@@ -184,7 +184,7 @@ Status terms:
 | 2 x VL53L0X and 5 x VL53L1X | Implemented through common distance API | **XSHUT6 needs revalidation** after changing to VL53L1X | `DistanceSensors.cpp`, `VL53L0XSensor.cpp`, `VL53L1XSensor.cpp` |
 | DFRobot 8x8 TOF | Full 64-zone reads, centre value and minimum value implemented; hardware polling is limited to 10 Hz with a 150 ms timeout | **Live 64-zone grids observed on 22 September 2026.** | `MatrixLidarSensor.cpp`, `DistanceSensors.cpp` |
 | Serial TOF | Nine-byte frame parser retained but disabled | **Parked:** Serial2 D7/D8 are now main-drive PWM outputs | `SerialTofSensor.cpp`, `sensor_config.h` |
-| USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **USB passed live: 197 JSON messages, 64 telemetry packets, 112 signal definitions and six commands. CH9143 appears on macOS, but `bluetooth.rx_messages` remained zero, proving the current fault is in the computer-to-robot radio/wiring path.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
+| USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **Verified on both transports. Bluetooth received 152 JSON messages, 17 telemetry packets, 114 signal definitions and seven commands. USB regression received 148 JSON messages, 13 telemetry packets, 114 definitions and seven commands.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
 | 4 x analog IR | Implemented through common distance API | **Verified** | `IRDistanceSensor.cpp` |
 | 2 x HC-SR04 ultrasonic | Driver retained but disabled | **Parked:** D30–D33 are currently allocated to the encoders | `UltrasonicSensor.cpp`, `sensor_config.h` |
 | TCS34725 colour | Raw RGBC integration implemented | **Verified previously**; later returned zeros while the shared `Wire1` bus was also suspect | `ColourSensor.cpp`, `sensors.cpp` |
@@ -218,7 +218,17 @@ Motor, weight collection, return-to-base, base detection, unloading, generic ave
 
 ## Serial links and commands
 
-The firmware accepts the same human-readable commands and JSON application protocol from USB `Serial` and the CH9143 on `Serial1`. `Console.cpp` maintains an independent line buffer for each. `DebugProtocol` sends replies and telemetry through whichever transport most recently sent JSON. When JSON mode becomes active, human-readable print tasks are suppressed so they cannot corrupt JSON. Hardware `Serial2` is used as D7/D8 PWM drive output, not as a UART.
+The firmware accepts the same human-readable commands and JSON application protocol from USB `Serial` and the CH9143 on `Serial1`. `Console.cpp` maintains an independent 768-byte line buffer for each. Overlong input is discarded through the next newline rather than dispatching truncated JSON. `DebugProtocol` sends replies and telemetry through whichever transport most recently sent valid JSON. When JSON mode becomes active, human-readable print tasks are suppressed so they cannot corrupt JSON. Hardware `Serial2` is used as D7/D8 PWM drive output, not as a UART.
+
+The Bluetooth transport now follows Group 7's proven CH9143 implementation:
+
+- Teensy `Serial1`, RX1 D0 and TX1 D1, 115200 baud, 8N1
+- robot-board TX crosses to Teensy RX1 D0; robot-board RX crosses to Teensy TX1 D1
+- 2048-byte added Teensy hardware RX buffer and 8192-byte added hardware TX buffer, both installed before `Serial1.begin()`
+- firmware serializes a complete JSON message into a 4096-byte buffer and queues the complete newline-terminated frame without chunk delays or `flush()`
+- desktop writes remain paced in 20-byte chunks with 3 ms spacing, then flush
+- one `hello` returns the complete catalogue and state; duplicate catalogue requests within 500 ms are suppressed
+- raw byte, complete-line and parsed-message counters are exposed as `bluetooth.rx_bytes`, `bluetooth.rx_lines` and `bluetooth.rx_messages`
 
 ### Human-readable mode
 
@@ -341,7 +351,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 4. **The servo signal pin is still ambiguous.** Driving both D28 and D29 works for testing but consumes two pins and prevents `Serial7` use. Identify the actual signal conductor and drive only that pin.
 5. **The serial TOF is intentionally offline.** Its D7/D8 Serial2 connector now carries PWM to the main-drive ESCs. Do not re-enable `SERIAL_TOF_ENABLED` unless the drive motors are moved to different pins.
 6. **The colour read blocks the cooperative scheduler.** Its approximately 50 ms integration call runs every 60 ms, so nominal 20 ms tasks cannot maintain their requested timing. Consider a non-blocking register read strategy or reduce the read rate when timing becomes important.
-7. **USB passed the automated live protocol suite on 22 September 2026.** It received 112 signal definitions, six commands, 64 telemetry packets, parameter round-trips, state and safe zero-speed commands. The CH9143 port opened but returned no bytes, and USB telemetry reported `bluetooth.rx_messages = 0`. Check robot-side radio power/pairing and crossed wiring: robot-module TX to Teensy RX1 D0, robot-module RX to Teensy TX1 D1.
+7. **USB and Bluetooth passed the automated live protocol suite on 22 September 2026.** The root Bluetooth fault was that `src/main.cpp` used `#if BLUETOOTH_ENABLED` without including `sensor_config.h`; the preprocessor therefore compiled out `Serial1.begin()`, the RX/TX buffer installation and the Bluetooth handler registration. `Console.cpp` still compiled its polling path because that separate translation unit did include the configuration, which made the failure look like a dead UART. Adding the direct include fixed it. Bluetooth then received 152 JSON messages, 17 telemetry packets, 114 signal definitions and seven commands; USB subsequently passed with 148 JSON messages, 13 telemetry packets, 114 definitions and seven commands. Both runs completed handshake, telemetry, parameter round-trips, state and safe zero-speed command tests.
 8. **Unsolicited Serial1 output is deliberately disabled.** A startup beacon could stall the cooperative scheduler when the radio path was unavailable. Bluetooth transmits only after receiving the app's `hello`, so an absent radio cannot stall sensors, STOP handling, or USB telemetry.
 9. **Documentation naming is slightly inconsistent.** The actual centre-zone telemetry key is `tof.8x8`; older GUI documentation refers to `tof.array_centre`.
 10. **Robot behaviour modules are still inherited stubs.** Do not mistake successful compilation for autonomous readiness.

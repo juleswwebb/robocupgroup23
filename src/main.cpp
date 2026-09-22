@@ -31,6 +31,7 @@
 #include "DriveControl.h"
 #include "Console.h"
 #include "DebugProtocol.h"
+#include "sensor_config.h"
 
 //**********************************************************************************
 // Local Definitions
@@ -108,6 +109,8 @@ Servo left_motor;
 // the Teensy is transmitting a large telemetry frame; the default UART buffer
 // is too small for that burst.
 static uint8_t bluetoothRxBuffer[2048];
+static uint8_t bluetoothTxBuffer[8192];
+
 #endif
 
 //**********************************************************************************
@@ -323,6 +326,9 @@ void setup() {
   Serial.begin(BAUD_RATE);
 #if BLUETOOTH_ENABLED
   BLUETOOTH_PORT.addMemoryForRead(bluetoothRxBuffer, sizeof(bluetoothRxBuffer));
+  // Match the proven Group 7 transport: queue complete JSON lines in a large
+  // hardware UART ring and let Serial1 drain them asynchronously.
+  BLUETOOTH_PORT.addMemoryForWrite(bluetoothTxBuffer, sizeof(bluetoothTxBuffer));
   BLUETOOTH_PORT.begin(BLUETOOTH_BAUD);
 #endif
   pin_init();

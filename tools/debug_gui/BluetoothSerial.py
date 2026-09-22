@@ -364,9 +364,9 @@ class BluetoothSerial(QObject):
             }
         )
 
-        # Ask the robot to advertise all telemetry parameters
-        # and commands.
-        self.request_definitions()
+        # The hello response contains the complete catalogue. Sending an
+        # immediate second request can make the half-duplex CH9143 broadcast
+        # every definition twice while commands accumulate behind it.
 
     # -----------------------------------------------------------------
 

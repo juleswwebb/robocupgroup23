@@ -6,6 +6,7 @@
 #include "Encoders.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
+#include "Console.h"
 #include "sensor_config.h"
 #include "sensors.h"
 #include <Arduino.h>
@@ -24,12 +25,12 @@ static Print* protocolOutput = &Serial;
 #define TELEMETRY_INTERVAL_MAX_MS 2000
 #define BLUETOOTH_TELEMETRY_MIN_MS 500
 #define BLUETOOTH_TX_BUFFER_SIZE 4096
-#define BLUETOOTH_TX_CHUNK_SIZE 20
 
 static bool jsonActive = false;
 static bool debugMode = false;
 static unsigned long telemetryIntervalMs = 100; // 10 Hz; USB CDC has ample room for the 8x8 frame
 static unsigned long lastTelemetryMs = 0;
+static unsigned long lastDefinitionsMs = 0;
 static unsigned long bluetoothRxMessages = 0;
 static DebugModeChangedHandler modeChangedHandler = nullptr;
 static char bluetoothTxBuffer[BLUETOOTH_TX_BUFFER_SIZE];
@@ -81,19 +82,9 @@ static void send(JsonDocument& doc) {
         }
         const size_t length = serializeJson(doc, bluetoothTxBuffer,
                                             sizeof(bluetoothTxBuffer));
-        size_t offset = 0;
-        while (offset < length) {
-            const size_t remaining = length - offset;
-            const size_t chunkLength = remaining < BLUETOOTH_TX_CHUNK_SIZE
-                ? remaining : BLUETOOTH_TX_CHUNK_SIZE;
-            BLUETOOTH_PORT.write(
-                reinterpret_cast<const uint8_t*>(bluetoothTxBuffer + offset),
-                chunkLength);
-            offset += chunkLength;
-            if (offset < length) delay(3);
-        }
+        BLUETOOTH_PORT.write(
+            reinterpret_cast<const uint8_t*>(bluetoothTxBuffer), length);
         BLUETOOTH_PORT.write('\n');
-        BLUETOOTH_PORT.flush();
         return;
     }
     serializeJson(doc, *protocolOutput);
@@ -235,6 +226,8 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("drive.right_us", "Right drive pulse", "Drive", "us");
     send_telemetry_definition("drive.active", "Drive active", "Drive", "bool", false);
     send_telemetry_definition("bluetooth.active", "Bluetooth transport active", "Communications", "bool", false);
+    send_telemetry_definition("bluetooth.rx_bytes", "Bluetooth raw bytes received", "Communications", "bytes");
+    send_telemetry_definition("bluetooth.rx_lines", "Bluetooth newline frames received", "Communications", "lines");
     send_telemetry_definition("bluetooth.rx_messages", "Bluetooth messages received", "Communications", "messages");
     send_telemetry_definition("system.uptime_ms", "Robot uptime", "System", "ms");
 }
@@ -374,6 +367,15 @@ static void send_definitions() {
     {
         JsonDocument doc;
         doc["type"] = "command_definition";
+        doc["name"] = "bluetooth_probe";
+        doc["label"] = "Send Bluetooth Probe";
+        doc["description"] = "Transmit one short diagnostic JSON line on Serial1 without moving hardware.";
+        doc["args"].to<JsonArray>();
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
         doc["name"] = "set_text_mode";
         doc["label"] = "Resume Text Output";
         doc["description"] = "Stop JSON telemetry and resume human-readable USB sensor output.";
@@ -382,6 +384,7 @@ static void send_definitions() {
     }
 
     send_state();
+    lastDefinitionsMs = millis();
 }
 
 // =====================================================================
@@ -516,6 +519,8 @@ void debug_protocol_send_telemetry() {
     data["drive.right_us"] = drive_control_get_right_microseconds();
     data["drive.active"] = drive_control_is_active();
     data["bluetooth.active"] = jsonActive && activeTransport == DebugTransport::Bluetooth;
+    data["bluetooth.rx_bytes"] = (long)console_bluetooth_rx_bytes();
+    data["bluetooth.rx_lines"] = (long)console_bluetooth_rx_lines();
     data["bluetooth.rx_messages"] = (long)bluetoothRxMessages;
     data["system.uptime_ms"] = now;
 
@@ -587,6 +592,13 @@ static void handle_command(JsonDocument& doc) {
     } else if (strcmp(command, "encoders_reset") == 0) {
         encoders_reset();
         debug_protocol_log("INFO", "Encoder counts reset");
+
+    } else if (strcmp(command, "bluetooth_probe") == 0) {
+        // Deliberately short enough to fit in the hardware UART's immediate
+        // transmit capacity. This cannot move hardware and is useful even if
+        // the far side of the radio is disconnected.
+        BLUETOOTH_PORT.print("{\"type\":\"bluetooth_probe\"}\n");
+        debug_protocol_log("INFO", "Bluetooth Serial1 probe transmitted");
 
     } else if (strcmp(command, "set_text_mode") == 0) {
         debug_protocol_log("INFO", "Leaving JSON mode");
@@ -668,11 +680,16 @@ static void handle_json_from(const char* json, DebugTransport transport) {
         debug_protocol_log("INFO", transport == DebugTransport::Bluetooth
             ? "Debug GUI connected over Bluetooth Serial1"
             : "Debug GUI connected over USB Serial");
-        send_state();
+        // The proven CH9143 workflow performs the entire handshake from one
+        // hello. This avoids two immediate catalogue broadcasts competing on
+        // the half-duplex radio link.
+        send_definitions();
 
     } else if (strcmp(type, "request_definitions") == 0) {
         debug_protocol_set_active(true);
-        send_definitions();
+        if (millis() - lastDefinitionsMs >= 500) {
+            send_definitions();
+        }
 
     } else if (strcmp(type, "command") == 0) {
         handle_command(doc);

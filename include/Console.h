@@ -43,4 +43,9 @@ void console_init();
 // Call every scheduler tick - cheap no-op when there's no serial input waiting.
 void console_update();
 
+// Raw Serial1 diagnostics. These count bytes before JSON parsing, allowing a
+// broken radio/wiring path to be distinguished from malformed messages.
+uint32_t console_bluetooth_rx_bytes();
+uint32_t console_bluetooth_rx_lines();
+
 #endif /* CONSOLE_H_ */
