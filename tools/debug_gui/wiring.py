@@ -100,6 +100,7 @@ KINDS: dict[str, DeviceKind] = {
         DeviceKind("encoder", "Wheel encoder", "encoder"),
         DeviceKind("servo", "Servo", "pwm"),
         DeviceKind("motor", "Drive motor / ESC", "drive"),
+        DeviceKind("drum", "Drum motor / PPM driver", "drum"),
         DeviceKind("other", "Other", None),
     )
 }
@@ -114,6 +115,7 @@ PORT_TYPE_LABELS = {
     "encoder": "Encoder pairs",
     "pwm": "PWM",
     "drive": "Drive ESC PWM",
+    "drum": "Drum PPM outputs",
 }
 
 
@@ -187,6 +189,14 @@ def _build_ports() -> list[Port]:
              signals=(("drive.right_percent", "Command"), ("drive.right_us", "Pulse")),
              expects="motor", pins=("D8",)),
     ))
+    ports.extend((
+        Port("drum_left", "Left drum driver  ·  D28", "drum",
+             signals=(("drum.left_percent", "Command"), ("drum.left_us", "Pulse")),
+             expects="drum", pins=("D28",)),
+        Port("drum_right", "Right drum driver  ·  D29", "drum",
+             signals=(("drum.right_percent", "Command"), ("drum.right_us", "Pulse")),
+             expects="drum", pins=("D29",)),
+    ))
 
     # A0-A13 are D14-D27 on the Teensy 4.0.
     for n in range(14):
@@ -220,13 +230,11 @@ def _build_ports() -> list[Port]:
             expects="encoder", pins=(f"D{a}", f"D{b}"),
         ))
 
-    # The firmware currently drives the same servo pulse on both pins,
-    # because nobody knows yet which conductor is the signal.
-    for pin in (28, 29):
+    for index, (trig, echo) in enumerate(((30, 31), (32, 33))):
         ports.append(Port(
-            f"d{pin}", f"D{pin}", "pwm",
-            signals=(("servo.us", "Pulse"),),
-            expects="servo", pins=(f"D{pin}",),
+            f"ultrasonic_{trig}_{echo}", f"HC-SR04 {index}  ·  TRIG D{trig} / ECHO D{echo}",
+            "ultrasonic", signals=((f"ultrasonic.{index}", "Distance"),),
+            expects="ultrasonic", pins=(f"D{trig}", f"D{echo}"),
         ))
 
     return ports
@@ -269,16 +277,15 @@ def default_devices() -> list[Device]:
         Device("8×8 ToF array", "tof_8x8", "wire1_0x33"),
         Device("Left drive ESC", "motor", "drive_left"),
         Device("Right drive ESC", "motor", "drive_right"),
+        Device("Left drum", "drum", "drum_left"),
+        Device("Right drum", "drum", "drum_right"),
     ]
-    devices += [Device(f"IR {n}", "ir", f"a{n + 6}") for n in range(4)]
     devices += [
-        Device("Colour sensor", "colour", "wire1_0x29"),
         Device("IMU", "imu", "wire1_0x28"),
         Device("Optical flow", "optical_flow", "spi_cs10"),
         Device("Inductive sensor", "inductive", "a0"),
         Device("Encoder 0", "encoder", "encoder_2_3"),
         Device("Encoder 1", "encoder", "encoder_4_5"),
-        Device("Servo", "servo", "d28"),
     ]
     return devices
 

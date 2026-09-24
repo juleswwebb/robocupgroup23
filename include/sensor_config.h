@@ -43,7 +43,15 @@
 #define DRIVE_US_PER_PERCENT 4.5f
 #define DRIVE_COMMAND_TIMEOUT_MS 300
 #define DRIVE_HARD_MAX_PERCENT 100
-#define DRIVE_DEFAULT_MAX_PERCENT 35
+#define DRIVE_DEFAULT_MAX_PERCENT 100
+
+// Drum motor-driver signal outputs on the user's D28/D29 connector.
+// These replace the old servo test outputs; do not attach ServoControl here.
+// Confirm left/right direction and driver pulse requirements before running.
+#define DRUM_LEFT_PIN 28
+#define DRUM_RIGHT_PIN 29
+#define DRUM_COMMAND_TIMEOUT_MS 300
+#define DRUM_TEST_MAX_PERCENT 100
 
 // The 7 VL53L0X/L1X sensors are on I2C bus 0 (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire
@@ -81,9 +89,9 @@
 #define IR2_PIN A8
 #define IR3_PIN A9
 
-// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54). These remain
-// disabled because their hardware/power path has not yet been validated.
-#define ULTRASONIC_ENABLED 0
+// 2 HC-SR04-style ultrasonic sensors (Digital Raw 1, CON54).
+// Echo must be level-shifted to 3.3 V before reaching the Teensy 4.0.
+#define ULTRASONIC_ENABLED 1
 #define ULTRASONIC0_TRIG_PIN 30
 #define ULTRASONIC0_ECHO_PIN 31
 #define ULTRASONIC1_TRIG_PIN 32
@@ -109,11 +117,7 @@
 #define ENCODER1_PIN_B 5
 #define ENCODER_USE_INTERNAL_PULLUPS 1
 
-// Servo test connector (labelled "SERIAL7" - D28/D29 double as Serial7
-// RX/TX, but here they're just being used as plain PWM outputs). Not sure
-// yet which of the two is actually wired to the servo signal line, so
-// both are driven identically until we confirm which one visibly moves it.
-#define SERVO_D28_PIN 28
-#define SERVO_D29_PIN 29
+// D28/D29 also double as Serial7 RX/TX. Serial7 and the old single-servo
+// test cannot be used while these pins drive the drums.
 
 #endif /* SENSOR_CONFIG_H_ */

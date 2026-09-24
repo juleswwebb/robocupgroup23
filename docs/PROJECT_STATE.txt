@@ -150,9 +150,9 @@ The wrappers cache values. Other code should use the facade getters rather than 
 | Encoder 1 | D4 channel A, D5 channel B | Full A/B interrupt quadrature decode |
 | Main drive left | D7 / RX2 | PWM output is direction-reversed in configuration so positive app command means physical forward |
 | Main drive right | D8 / TX2 | PWM output is direction-reversed in configuration so positive app command means physical forward |
-| Servo test connector | D28 and D29 | Both currently output the same command |
+| Drum motor drivers | D28 left, D29 right | Independent servo-style PWM outputs; +/-100% range, 300 ms command timeout |
 
-D28 and D29 are also the `Serial7` pins. They cannot be used for `Serial7` while attached as servo PWM outputs. Both are deliberately driven because the physical signal conductor has not yet been identified; this is a temporary test arrangement.
+D28 and D29 are also the `Serial7` pins. The old single-servo test on these pins is retired; Serial7 cannot be used while the drum outputs are active. Left/right pin assignment reflects the configured mapping, but direction still needs a physical test.
 
 ### VL53 XSHUT mapping
 
@@ -186,14 +186,15 @@ Status terms:
 | Serial TOF | Nine-byte frame parser retained but disabled | **Parked:** Serial2 D7/D8 are now main-drive PWM outputs | `SerialTofSensor.cpp`, `sensor_config.h` |
 | USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **Verified on both transports. Bluetooth received 152 JSON messages, 17 telemetry packets, 114 signal definitions and seven commands. USB regression received 148 JSON messages, 13 telemetry packets, 114 definitions and seven commands.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
 | 4 x analog IR | Implemented through common distance API | **Verified** | `IRDistanceSensor.cpp` |
-| 2 x HC-SR04 ultrasonic | Driver retained but disabled | **Parked:** D30–D33 are available again, but power/echo hardware is not yet verified | `UltrasonicSensor.cpp`, `sensor_config.h` |
+| 2 x HC-SR04 ultrasonic | Driver enabled: interrupt echo, alternating pings | **Unverified on hardware:** D30/D31 and D32/D33; confirm power and 3.3 V-safe echo level | `UltrasonicSensor.cpp`, `sensor_config.h` |
 | TCS34725 colour | Raw RGBC integration implemented | **Verified previously**; later returned zeros while the shared `Wire1` bus was also suspect | `ColourSensor.cpp`, `sensors.cpp` |
 | PMW3901 optical flow | SPI motion and accumulated counts implemented | **Verified** | `OpticalFlowSensor.cpp`, `OpticalFlow.cpp` |
 | BNO055 IMU | Euler orientation and calibration implemented | **Verified** changing with movement; calibration remained low during tests | `ImuSensor.cpp`, `IMU.cpp` |
 | BMP280 on SEN0253 | No driver or telemetry | **Not implemented** | None |
 | Inductive proximity | Active-low debounce, detection state and count implemented | **Verified after wiring was corrected** | `InductiveSensor.cpp`, `Inductive.cpp` |
-| 2 x quadrature encoder | Full 4x A/B interrupt decoder, internal pull-ups and raw-input diagnostics | **Needs live validation:** remapped to Group 7's verified Digital Raw 2 wiring on D2–D5; app exposes position, A/B levels and valid-edge counts | `EncoderSensor.cpp`, `Encoders.cpp` |
-| One servo or continuous-rotation servo | Pulse, speed, angle and stop control implemented | **Verified**, but both D28 and D29 are driven until signal pin is identified | `ServoControl.cpp` |
+| 2 x quadrature encoder | Full 4x A/B interrupt decoder, internal pull-ups and raw-input diagnostics | **Counts worked after the CPU board was replaced**, per operator; D2–D5. Distance scale, sign and wheel track still need measured calibration | `EncoderSensor.cpp`, `Encoders.cpp` |
+| 2 x drum/reel motors | Servo-style signal outputs, Debug Mode gate, +/-100% range and 300 ms watchdog | **Wired per operator:** D28 left, D29 right; direction and driver pulse requirements remain unverified | `DrumControl.cpp`, `sensor_config.h` |
+| One servo or continuous-rotation servo | Previous test controls retired | D28/D29 are now reserved exclusively for drum motors | `ServoControl.cpp` |
 | Main drive motors | Left/right PWM, keyboard controls, pulse/command telemetry, app controls and watchdog | **Coded and build-verified:** must be tested with wheels safely off the ground | `DriveControl.cpp`, `DebugProtocol.cpp`, `DebugGUI.py` |
 
 ## Scheduler and timing
@@ -319,7 +320,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 - Central wiring configuration
 - Common distance-sensor interface and registry
 - Seven-sensor VL53 address sequencing through SX1509
-- 8x8 TOF and IR wrappers (ultrasonic and Serial2 TOF are retained but disabled)
+- 8x8 TOF, IR and ultrasonic wrappers (Serial2 TOF remains disabled)
 - Shared USB Serial transport for the JSON protocol and typed console
 - CH9143 Serial1 transport with paced writes, expanded UART buffering and the same app protocol
 - Colour, optical flow, IMU, inductive, encoder, servo and safety-gated drive modules
@@ -346,7 +347,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 ## Known issues and technical risks
 
 1. **The `Wire1` hardware path needs revalidation.** The 8x8 array, colour sensor and BNO055 share this bus. They worked at different stages, but later the 8x8 became invalid and colour values became zero. A failure affecting all three points first to shared SDA, SCL, power, ground, or connector integrity rather than three independent driver failures.
-2. **Ultrasonic sensing is parked.** D30--D33 are available after moving the encoders, but the ultrasonic feature remains disabled until its power and echo-voltage issues are resolved.
+2. **Ultrasonic sensing is unverified.** The firmware now enables D30/D31 and D32/D33, alternates trigger pulses at least 60 ms apart and invalidates readings without an echo after 38 ms. Verify power and level-shift each HC-SR04 echo to 3.3 V before connecting to a Teensy 4.0.
 3. **Encoders work after replacing the CPU board.** The encoder board uses the direct Digital Raw 2 inputs D2/D3 and D4/D5. Both raw A/B transitions and signed counts have been observed. Encoder distance scale and left/right polarity still require measured calibration.
 4. **The servo signal pin is still ambiguous.** Driving both D28 and D29 works for testing but consumes two pins and prevents `Serial7` use. Identify the actual signal conductor and drive only that pin.
 5. **The serial TOF is intentionally offline.** Its D7/D8 Serial2 connector now carries PWM to the main-drive ESCs. Do not re-enable `SERIAL_TOF_ENABLED` unless the drive motors are moved to different pins.
@@ -448,3 +449,46 @@ ARENA VIEW AND NAVIGATION
   Debug Mode exit and manual keyboard drive always cancel navigation.
 - These defaults are intentionally uncalibrated. Measure encoder mm/count,
   wheel track and every sensor pose before treating map geometry as physical.
+- Arena View now supports direct dragging of sensor markers, including both
+  D30-D33 ultrasonics, with saved robot-relative placement in QSettings.
+  Operator-added walls, obstacle circles, weights and a goal are saved
+  separately from live range points. `arena_planner.py` previews an A* route
+  on a 100 mm grid, inflating known geometry by robot radius and margin.
+  This route is a desktop preview only; it is NOT sent to the firmware or used
+  to command motors, because local odometry and map origin are uncalibrated.
+- Paired top/bottom L1X readings (XSHUT6/5 left and XSHUT3/4 right)
+  can mark weight candidates after three frames with a >=150 mm depth gap.
+  These are map hints, not yet an autonomous pickup command.
+- Rechecked Group 7's `testing` branch (commit f7a6834): unlike the older
+  branch, it has a dedicated pre-laid arena MissionLayout, 4.9 x 2.4 m bounds,
+  green/blue home and opposite-home no-go, walls/ramps/tubes, real/dummy
+  weights, inflated A* routing, a 64-point waypoint cap, and a firmware
+  mission upload/execution protocol. Group 23 now has its own separate
+  Mission Planner tab implementing the editable layout and offline route
+  planning. It intentionally does NOT upload waypoints or automatically drive
+  them: Group 23 has not yet calibrated/validated the encoder scale, start
+  localisation, obstacle geometry or live route-following controller.
+- The Group 7 firmware is tightly coupled to its different pins, wheel drive,
+  sensor layout and commands; it must not be copied into Group 23 wholesale.
+  The existing Group 23 firmware navigation remains the conservative 8x8/IMU
+  obstacle-avoidance controller, separately gated behind Debug Mode.
+- Arena View placement now includes every active Group 23 sensor: seven VL53s,
+  8x8, two ultrasonics, optical flow and inductive sensors. Placement names
+  follow the Wiring tab, and each marker has saved x/y/aim/height. VL53,
+  8x8 and ultrasonic markers have distinct colours. IMU and encoders still
+  feed pose estimation but no longer have placement controls. Colour/IR are
+  absent from the current wiring map and hidden in the live GUI; firmware
+  drivers and raw serial output are unchanged. A measured-distance
+  encoder calibration helper saves each wheel's scale and direction in
+  desktop QSettings; wheel track and real-world accuracy still require tests.
+- Two drum/reel outputs use D28 and D29,
+  assuming a servo/PPM motor driver like Group 7's DFR0513. `DrumControl.cpp`
+  starts neutral, permits +/-100%, and neutralises after 300 ms without a
+  command. `drum_set` requires Debug Mode; STOP and Debug Mode exit neutralise
+  both. Dashboard has a press-and-hold test button. Actual wiring, direction
+  and driver type have NOT been verified on Group 23 hardware.
+- Autonomous weight collection remains unconnected to the drive controller.
+  Group 7's mission firmware assumes calibrated odometry/start pose, its own
+  sensor geometry and actuator sequence. Group 23 does not yet have those
+  measurements or a verified pickup/sorting state machine. The desktop
+  mission route and weight hints must not be treated as drive instructions.

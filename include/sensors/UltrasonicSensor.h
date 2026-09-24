@@ -4,8 +4,8 @@
 //
 // HC-SR04-style ultrasonic distance sensor (separate trig/echo pins).
 // Interrupt-driven rather than using the classic blocking pulseIn(): update()
-// just checks whether it's time to fire the next ping (self-paced, ~60ms
-// apart by default to avoid one sensor picking up another's echo), and an
+// just checks whether it's time to fire the next ping. All instances share
+// a ping slot so adjacent sensors cannot hear one another's trigger, and an
 // ISR on the echo pin captures the actual pulse width whenever it arrives.
 // getDistanceMM()/isValid() just return the last value the ISR captured.
 
@@ -42,6 +42,16 @@ private:
     volatile uint32_t echoStartUs_ = 0;
     volatile uint16_t lastDistanceMM_ = 0;
     volatile bool lastValid_ = false;
+    volatile bool captureArmed_ = false;
+    volatile bool sawRise_ = false;
+    volatile bool captureReady_ = false;
+    volatile uint32_t capturedUs_ = 0;
+    bool waiting_ = false;
+    uint32_t pingStartedUs_ = 0;
+    static uint32_t lastAnyPingUs_;
+    static bool anyPingStarted_;
+    static UltrasonicSensor* activeSensor_;
+    static uint8_t nextSlot_;
 
     // attachInterrupt() needs a plain function pointer, so each live
     // instance is assigned one of a small fixed set of trampoline

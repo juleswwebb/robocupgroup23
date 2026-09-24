@@ -47,6 +47,16 @@
       "port": "wire1_0x33"
     },
     {
+      "name": "Ultrasonic_Right",
+      "kind": "ultrasonic",
+      "port": "ultrasonic_30_31"
+    },
+    {
+      "name": "Ultrasonic_Left",
+      "kind": "ultrasonic",
+      "port": "ultrasonic_32_33"
+    },
+    {
       "name": "Left drive ESC",
       "kind": "motor",
       "port": "drive_left"
@@ -57,9 +67,14 @@
       "port": "drive_right"
     },
     {
-      "name": "Colour sensor",
-      "kind": "colour",
-      "port": "wire1_0x29"
+      "name": "Left drum",
+      "kind": "drum",
+      "port": "drum_left"
+    },
+    {
+      "name": "Right drum",
+      "kind": "drum",
+      "port": "drum_right"
     },
     {
       "name": "IMU",
@@ -85,11 +100,6 @@
       "name": "Encoder 1",
       "kind": "encoder",
       "port": "encoder_4_5"
-    },
-    {
-      "name": "Servo",
-      "kind": "servo",
-      "port": "d28"
     }
   ]
 }

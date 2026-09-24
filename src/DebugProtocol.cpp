@@ -6,6 +6,7 @@
 #include "Encoders.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
+#include "DrumControl.h"
 #include "Navigation.h"
 #include "Console.h"
 #include "sensor_config.h"
@@ -125,7 +126,7 @@ static void send_state() {
     JsonDocument doc;
     doc["type"] = "state";
     doc["debug_mode"] = debugMode;
-    doc["stopped"] = (servo_control_get_microseconds() == 1500 && !drive_control_is_active());
+    doc["stopped"] = (!drive_control_is_active() && !drum_control_is_active());
     doc["fault"] = false;
     doc["uptime_ms"] = millis();
     send(doc);
@@ -220,12 +221,16 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("encoder.1_a", "Encoder 1 channel A", "Encoders", "bool", false);
     send_telemetry_definition("encoder.1_b", "Encoder 1 channel B", "Encoders", "bool", false);
     send_telemetry_definition("encoder.1_edges", "Encoder 1 valid edges", "Encoders", "edges");
-    send_telemetry_definition("servo.us", "Servo command", "Actuators", "us");
     send_telemetry_definition("drive.left_percent", "Left drive command", "Drive", "%");
     send_telemetry_definition("drive.right_percent", "Right drive command", "Drive", "%");
     send_telemetry_definition("drive.left_us", "Left drive pulse", "Drive", "us");
     send_telemetry_definition("drive.right_us", "Right drive pulse", "Drive", "us");
     send_telemetry_definition("drive.active", "Drive active", "Drive", "bool", false);
+    send_telemetry_definition("drum.left_percent", "Left drum command", "Drum", "%");
+    send_telemetry_definition("drum.right_percent", "Right drum command", "Drum", "%");
+    send_telemetry_definition("drum.left_us", "Left drum pulse", "Drum", "us");
+    send_telemetry_definition("drum.right_us", "Right drum pulse", "Drum", "us");
+    send_telemetry_definition("drum.active", "Drum active", "Drum", "bool", false);
     send_telemetry_definition("navigation.active", "Navigation active", "Navigation", "bool", false);
     send_telemetry_definition("navigation.state", "Navigation state", "Navigation", "state", false);
     send_telemetry_definition("navigation.stop_reason", "Navigation status detail", "Navigation", "text", false);
@@ -310,20 +315,6 @@ static void send_definitions() {
     }
     {
         JsonDocument doc;
-        doc["type"] = "parameter_definition";
-        doc["name"] = "servo.pulse_us";
-        doc["label"] = "Servo pulse width";
-        doc["description"] = "1000 = full reverse, 1500 = stop, 2000 = full forward.";
-        doc["datatype"] = "int";
-        doc["value"] = servo_control_get_microseconds();
-        doc["min"] = 1000;
-        doc["max"] = 2000;
-        doc["step"] = 10;
-        doc["unit"] = "us";
-        send(doc);
-    }
-    {
-        JsonDocument doc;
         doc["type"] = "command_definition";
         doc["name"] = "drive_set";
         doc["label"] = "Drive motors";
@@ -350,6 +341,23 @@ static void send_definitions() {
     {
         JsonDocument doc;
         doc["type"] = "command_definition";
+        doc["name"] = "drum_set";
+        doc["label"] = "Drum motors";
+        doc["description"] = "D28/D29 servo-style outputs; hold-to-run test, full +/-100% range and 300 ms timeout. Requires Debug Mode.";
+        JsonArray args = doc["args"].to<JsonArray>();
+        JsonObject left = args.add<JsonObject>();
+        left["name"] = "left"; left["label"] = "Left (%)";
+        left["type"] = "int"; left["min"] = -100; left["max"] = 100;
+        left["step"] = 5; left["default"] = 0;
+        JsonObject right = args.add<JsonObject>();
+        right["name"] = "right"; right["label"] = "Right (%)";
+        right["type"] = "int"; right["min"] = -100; right["max"] = 100;
+        right["step"] = 5; right["default"] = 0;
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
         doc["name"] = "navigation_set";
         doc["label"] = "Autonomous navigation";
         doc["description"] = "Start/stop conservative 8x8 TOF obstacle navigation. Start requires Debug Mode, valid IMU and valid forward range.";
@@ -364,7 +372,7 @@ static void send_definitions() {
         JsonDocument doc;
         doc["type"] = "command_definition";
         doc["name"] = "stop";
-        doc["label"] = "STOP (servo neutral)";
+        doc["label"] = "STOP all motors";
         doc["description"] = "Always allowed, debug mode or not.";
         doc["args"].to<JsonArray>();
         send(doc);
@@ -380,33 +388,6 @@ static void send_definitions() {
         arg["label"] = "Enabled";
         arg["type"] = "bool";
         arg["default"] = true;
-        send(doc);
-    }
-    {
-        JsonDocument doc;
-        doc["type"] = "command_definition";
-        doc["name"] = "servo_set";
-        doc["label"] = "Servo Test";
-        doc["description"] = "Drive the servo. Requires debug mode.";
-        JsonArray args = doc["args"].to<JsonArray>();
-
-        JsonObject speed = args.add<JsonObject>();
-        speed["name"] = "speed";
-        speed["label"] = "Speed (%)";
-        speed["type"] = "int";
-        speed["min"] = -100;
-        speed["max"] = 100;
-        speed["step"] = 5;
-        speed["default"] = 0;
-
-        JsonObject us = args.add<JsonObject>();
-        us["name"] = "us";
-        us["label"] = "Pulse (us, 0 = use speed)";
-        us["type"] = "int";
-        us["min"] = 0;
-        us["max"] = 2500;
-        us["step"] = 10;
-        us["default"] = 0;
         send(doc);
     }
     {
@@ -566,12 +547,16 @@ void debug_protocol_send_telemetry() {
     data["encoder.1_b"] = encoder_get_channel_b(1);
     data["encoder.1_edges"] = encoder_get_transition_count(1);
 
-    data["servo.us"] = servo_control_get_microseconds();
     data["drive.left_percent"] = drive_control_get_left_percent();
     data["drive.right_percent"] = drive_control_get_right_percent();
     data["drive.left_us"] = drive_control_get_left_microseconds();
     data["drive.right_us"] = drive_control_get_right_microseconds();
     data["drive.active"] = drive_control_is_active();
+    data["drum.left_percent"] = drum_control_left_percent();
+    data["drum.right_percent"] = drum_control_right_percent();
+    data["drum.left_us"] = drum_control_left_us();
+    data["drum.right_us"] = drum_control_right_us();
+    data["drum.active"] = drum_control_is_active();
     data["navigation.active"] = navigation_is_active();
     data["navigation.state"] = navigation_get_state_name();
     data["navigation.stop_reason"] = navigation_get_stop_reason();
@@ -615,8 +600,8 @@ static void handle_command(JsonDocument& doc) {
 
     if (strcmp(command, "stop") == 0) {
         // Deliberately always allowed - a stop must never be gated.
-        servo_control_set_speed(0);
         drive_control_stop();
+        drum_control_stop();
         navigation_stop("Emergency stop");
         debug_protocol_log("WARNING", "STOP: all actuator outputs set to neutral");
         send_state();
@@ -626,27 +611,14 @@ static void handle_command(JsonDocument& doc) {
         debug_protocol_log("INFO", debugMode ? "Debug mode enabled"
                                              : "Debug mode disabled");
         if (!debugMode) {
-            servo_control_set_speed(0); // don't leave an actuator running
             drive_control_stop();
+            drum_control_stop();
             navigation_stop("Debug mode disabled");
         }
         send_state();
 
     } else if (strcmp(command, "servo_set") == 0) {
-        if (!debugMode) {
-            send_error("servo_set requires debug mode");
-            return;
-        }
-        // us wins when given; otherwise fall back to the speed percentage.
-        int us = doc["us"] | 0;
-        if (us > 0) {
-            servo_control_set_microseconds(us);
-        } else if (doc["angle"].is<int>()) {
-            servo_control_set_angle(doc["angle"] | 90);
-        } else {
-            servo_control_set_speed(doc["speed"] | 0);
-        }
-        send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
+        send_error("Single-servo test retired; D28/D29 are drum outputs");
 
     } else if (strcmp(command, "drive_set") == 0) {
         if (!debugMode) {
@@ -656,12 +628,27 @@ static void handle_command(JsonDocument& doc) {
         navigation_stop("Manual drive command");
         drive_control_set_percent(doc["left"] | 0, doc["right"] | 0);
 
+    } else if (strcmp(command, "drum_set") == 0) {
+        if (!debugMode) {
+            send_error("drum_set requires debug mode");
+            return;
+        }
+        const int left = doc["left"] | 0;
+        const int right = doc["right"] | 0;
+        if ((left || right) && (navigation_is_active() || drive_control_is_active())) {
+            drum_control_stop();
+            send_error("Stop navigation/drive before testing drums");
+            return;
+        }
+        drum_control_set_percent(left, right);
+
     } else if (strcmp(command, "navigation_set") == 0) {
         const bool enabled = doc["enabled"] | false;
         if (enabled && !debugMode) {
             send_error("navigation_set requires debug mode");
             return;
         }
+        if (enabled) drum_control_stop();
         if (!navigation_set_enabled(enabled)) {
             send_error(navigation_get_stop_reason());
         } else {
@@ -701,12 +688,7 @@ static void handle_parameter(JsonDocument& doc) {
         send_parameter_value("telemetry.interval_ms", (long)telemetryIntervalMs);
 
     } else if (strcmp(name, "servo.pulse_us") == 0) {
-        if (!debugMode) {
-            send_error("servo.pulse_us requires debug mode");
-            return;
-        }
-        servo_control_set_microseconds(doc["value"] | 1500);
-        send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
+        send_error("Single-servo test retired; D28/D29 are drum outputs");
 
     } else if (strcmp(name, "drive.max_percent") == 0) {
         if (!debugMode) {
@@ -737,7 +719,7 @@ static void handle_parameter_request(JsonDocument& doc) {
     if (strcmp(name, "telemetry.interval_ms") == 0) {
         send_parameter_value("telemetry.interval_ms", (long)telemetryIntervalMs);
     } else if (strcmp(name, "servo.pulse_us") == 0) {
-        send_parameter_value("servo.pulse_us", servo_control_get_microseconds());
+        send_error("Single-servo test retired; D28/D29 are drum outputs");
     } else if (strcmp(name, "drive.max_percent") == 0) {
         send_parameter_value("drive.max_percent", drive_control_get_max_percent());
     } else if (strcmp(name, "navigation.speed_percent") == 0) {

@@ -65,10 +65,10 @@ import pyqtgraph as pg
 import theme
 from BluetoothSerial import BluetoothSerial
 from DataRecorder import DataRecorder
-from colour_view import ColourCard
 from tof_view import TofView
 from wiring import HardwareMap, WiringPanel
 from arena_view import ArenaView
+from mission_view import MissionPlannerView
 
 
 
@@ -303,7 +303,7 @@ class RobotDebugGUI(QMainWindow):
         # Sized against the actual screen rather than a fixed 1500x900,
         # which overflowed a 1440x900 laptop display once the menu bar
         # and dock were accounted for.
-        self.setMinimumSize(980, 620)
+        self.setMinimumSize(800, 560)
         theme.fit_to_screen(self, preferred_width=1400, preferred_height=880)
 
         self.settings = QSettings(
@@ -325,6 +325,8 @@ class RobotDebugGUI(QMainWindow):
         self.plot_colour_index = 0
         self.drive_keys: set[int] = set()
         self.drive_command_available = False
+        self.drum_command_available = False
+        self.drum_held = False
         self.robot_debug_mode = False
 
         # Recording metadata / parameter snapshot support.
@@ -335,6 +337,7 @@ class RobotDebugGUI(QMainWindow):
         self.raw_line_times = deque(maxlen=5000)
         self.telemetry_event_times = deque(maxlen=10000)
         self.last_telemetry_monotonic = None
+        self.connected_since_monotonic = None
         self.protocol_error_count = 0
 
         self.start_time = time.monotonic()
@@ -375,19 +378,14 @@ class RobotDebugGUI(QMainWindow):
         )
         self.health_timer.start(500)
 
-        # 10 Hz is plenty for a colour swatch, and it only redraws while
-        # the dashboard is actually showing.
-        self.colour_timer = QTimer(self)
-        self.colour_timer.timeout.connect(
-            self.refresh_colour_card
-        )
-        self.colour_timer.start(100)
-
         # Fresh drive commands are sent while a key is held. The firmware has
         # its own 300 ms timeout as the final protection if this app stalls.
         self.drive_keepalive_timer = QTimer(self)
         self.drive_keepalive_timer.timeout.connect(self._send_keyboard_drive)
         self.drive_keepalive_timer.start(100)
+        self.drum_keepalive_timer = QTimer(self)
+        self.drum_keepalive_timer.timeout.connect(self._send_drum_command)
+        self.drum_keepalive_timer.start(100)
 
         self.apply_device_names()
 
@@ -961,19 +959,18 @@ class RobotDebugGUI(QMainWindow):
         # Commands
         # --------------------------------------------------------------
 
-        command_panel = QWidget()
+        # Scroll the entire command column. Previously only the dynamic
+        # commands scrolled, so fixed cards were crushed on laptop screens.
+        command_panel = QScrollArea()
+        command_panel.setWidgetResizable(True)
+        command_panel.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        command_content = QWidget()
+        command_panel.setWidget(command_content)
 
         command_panel_layout = QVBoxLayout(
-            command_panel
+            command_content
         )
-
-        self.colour_card = ColourCard(
-            self.settings
-        )
-
-        command_panel_layout.addWidget(
-            self.colour_card
-        )
+        command_panel_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         command_header = QHBoxLayout()
 
@@ -1045,10 +1042,10 @@ class RobotDebugGUI(QMainWindow):
         self.drive_speed_slider = QSlider(Qt.Orientation.Horizontal)
         self.drive_speed_slider.setRange(5, 100)
         self.drive_speed_slider.setSingleStep(5)
-        self.drive_speed_slider.setValue(35)
+        self.drive_speed_slider.setValue(100)
         self.drive_speed_slider.setEnabled(False)
         speed_row.addWidget(self.drive_speed_slider, 1)
-        self.drive_speed_label = QLabel("35%")
+        self.drive_speed_label = QLabel("100%")
         self.drive_speed_label.setMinimumWidth(36)
         speed_row.addWidget(self.drive_speed_label)
         drive_layout.addLayout(speed_row)
@@ -1060,11 +1057,29 @@ class RobotDebugGUI(QMainWindow):
 
         command_panel_layout.addWidget(drive_group)
 
-        self.dashboard_command_scroll = QScrollArea()
-
-        self.dashboard_command_scroll.setWidgetResizable(
-            True
-        )
+        drum_group = QGroupBox("Drum motors · D28 / D29")
+        drum_layout = QVBoxLayout(drum_group)
+        drum_hint = QLabel("Servo-style motor driver only. Set each channel, then press and hold RUN; release to stop. Requires Debug Mode. Firmware stops after 300 ms without a fresh command.")
+        drum_hint.setWordWrap(True)
+        drum_layout.addWidget(drum_hint)
+        drum_row = QHBoxLayout()
+        self.drum_left_spin = QSpinBox(); self.drum_left_spin.setRange(-100, 100)
+        self.drum_left_spin.setValue(15); self.drum_left_spin.setSuffix(" %")
+        self.drum_right_spin = QSpinBox(); self.drum_right_spin.setRange(-100, 100)
+        self.drum_right_spin.setValue(15); self.drum_right_spin.setSuffix(" %")
+        drum_row.addWidget(QLabel("Left")); drum_row.addWidget(self.drum_left_spin)
+        drum_row.addWidget(QLabel("Right")); drum_row.addWidget(self.drum_right_spin)
+        drum_layout.addLayout(drum_row)
+        self.drum_hold_button = QPushButton("PRESS AND HOLD · RUN DRUMS")
+        self.drum_hold_button.setObjectName("primaryButton")
+        self.drum_hold_button.setEnabled(False)
+        self.drum_hold_button.pressed.connect(self._start_drum_hold)
+        self.drum_hold_button.released.connect(self._stop_drum_hold)
+        drum_layout.addWidget(self.drum_hold_button)
+        self.drum_status_label = QLabel("WAITING FOR DRUM CONTROL")
+        self.drum_status_label.setObjectName("statusPill")
+        drum_layout.addWidget(self.drum_status_label)
+        command_panel_layout.addWidget(drum_group)
 
         self.dashboard_command_container = QWidget()
 
@@ -1076,13 +1091,8 @@ class RobotDebugGUI(QMainWindow):
             Qt.AlignmentFlag.AlignTop
         )
 
-        self.dashboard_command_scroll.setWidget(
-            self.dashboard_command_container
-        )
-
         command_panel_layout.addWidget(
-            self.dashboard_command_scroll,
-            1,
+            self.dashboard_command_container,
         )
 
         splitter.addWidget(
@@ -1119,6 +1129,49 @@ class RobotDebugGUI(QMainWindow):
         Qt.Key.Key_W, Qt.Key.Key_A, Qt.Key.Key_S, Qt.Key.Key_D,
         Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
     }
+
+    def _drum_controls_available(self) -> bool:
+        return (self.bluetooth.is_connected() and self.robot_debug_mode
+                and self.drum_command_available)
+
+    def _update_drum_controls(self):
+        available = self._drum_controls_available()
+        if not available and self.drum_held:
+            self._stop_drum_hold()
+        self.drum_hold_button.setEnabled(available)
+        if not available:
+            self.drum_status_label.setText("ENABLE DEBUG MODE / CONNECT DRUM CONTROL")
+            theme.set_pill_state(self.drum_status_label, "")
+
+    def _start_drum_hold(self):
+        if not self._drum_controls_available():
+            return
+        self.drum_held = True
+        self._send_drum_command()
+
+    def _send_drum_command(self):
+        if not self.drum_held:
+            return
+        if not self._drum_controls_available():
+            self._stop_drum_hold()
+            return
+        left, right = self.drum_left_spin.value(), self.drum_right_spin.value()
+        self.bluetooth.send_command("drum_set", left=left, right=right)
+        self.drum_status_label.setText(f"RUNNING · L {left:+d}% / R {right:+d}%")
+        theme.set_pill_state(self.drum_status_label, "busy")
+
+    def _stop_drum_hold(self):
+        was_held = self.drum_held
+        self.drum_held = False
+        if was_held and self._drum_controls_available():
+            self.bluetooth.send_command("drum_set", left=0, right=0)
+        if self._drum_controls_available():
+            self.drum_status_label.setText("STOPPED · HOLD RUN TO TEST")
+            theme.set_pill_state(self.drum_status_label, "ok")
+
+    def focusOutEvent(self, event):
+        self._stop_drum_hold()
+        super().focusOutEvent(event)
 
     def _drive_controls_available(self) -> bool:
         return (
@@ -1407,6 +1460,8 @@ class RobotDebugGUI(QMainWindow):
         self.arena_view.command_requested.connect(self.execute_command)
         self.arena_view.parameter_requested.connect(self._set_arena_parameter)
         self.tabs.addTab(self.arena_view, "Arena View")
+        self.mission_view = MissionPlannerView(self.settings)
+        self.tabs.addTab(self.mission_view, "Mission Planner")
 
     def _set_arena_parameter(self, name: str, value: Any):
         self.parameter_values[name] = value
@@ -1452,15 +1507,7 @@ class RobotDebugGUI(QMainWindow):
         _, label, _ = self._telemetry_metadata(name)
         return name if label == name else f"{label}  ({name})"
 
-    def refresh_colour_card(self):
-        if self.colour_card.isVisible():
-            self.colour_card.refresh(self.wiring_live_values())
-
     def apply_device_names(self):
-        colour_device = self.hardware_map.device_for_signal("colour.r")
-        self.colour_card.set_device_name(
-            colour_device.name if colour_device else "Colour sensor"
-        )
         tof_device = self.hardware_map.device_for_signal("tof.8x8")
         self.tof_view.set_device_name(
             tof_device.name if tof_device else "8×8 ToF array"
@@ -1468,6 +1515,7 @@ class RobotDebugGUI(QMainWindow):
 
     def on_wiring_changed(self):
         self.apply_device_names()
+        self.arena_view.refresh_from_wiring()
 
         # Relabel everything already on screen; new signals pick the
         # names up as they arrive.
@@ -1893,6 +1941,23 @@ class RobotDebugGUI(QMainWindow):
                 f"{now - self.last_telemetry_monotonic:.2f} s"
             )
 
+        # An open serial device is not proof that the radio is delivering
+        # telemetry. Make this explicit while the backend retries its hello.
+        if self.bluetooth.is_connected() and self.connected_since_monotonic is not None:
+            reference = self.last_telemetry_monotonic or self.connected_since_monotonic
+            if now - reference > 4.0:
+                self.connection_status.setText("● NO TELEMETRY")
+                self.connection_status.setToolTip(
+                    "Port is open, but no robot telemetry has arrived. "
+                    "The app will retry the handshake automatically."
+                )
+                theme.set_pill_state(self.connection_status, "bad")
+            else:
+                self.connection_status.setText(
+                    f"● {Path(self.bluetooth.port or '').name}"
+                )
+                theme.set_pill_state(self.connection_status, "ok")
+
         # Errors are called out in red once there are any, so a link that
         # is quietly dropping messages doesn't blend into the readout.
         if self.protocol_error_count:
@@ -2036,6 +2101,8 @@ class RobotDebugGUI(QMainWindow):
         )
 
         if connected:
+            self.connected_since_monotonic = time.monotonic()
+            self.last_telemetry_monotonic = None
             self.connect_button.setText(
                 "Disconnect"
             )
@@ -2094,11 +2161,17 @@ class RobotDebugGUI(QMainWindow):
                 f"Connected to {port}",
             )
             self._update_drive_controls()
+            self._update_drum_controls()
 
         else:
+            self.connected_since_monotonic = None
+            self.last_telemetry_monotonic = None
             self.robot_debug_mode = False
+            self._stop_drum_hold()
+            self.drum_command_available = False
             self._set_drive_armed(False)
             self._update_drive_controls()
+            self._update_drum_controls()
             if self.recorder.is_recording:
                 self.stop_recording()
 
@@ -2163,7 +2236,7 @@ class RobotDebugGUI(QMainWindow):
 
     def on_telemetry_definition(self, definition: dict):
         name = str(definition.get("name", ""))
-        if not name:
+        if not name or self._inactive_sensor_signal(name):
             return
 
         self.telemetry_definitions[name] = dict(definition)
@@ -2195,6 +2268,12 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry_table.setItem(row, 3, QTableWidgetItem(unit))
 
     @staticmethod
+    def _inactive_sensor_signal(name: str) -> bool:
+        # These sensors are not installed on the current robot. Firmware may
+        # still advertise them, but they should not fill the live UI/plots.
+        return name.startswith(("ir.", "colour."))
+
+    @staticmethod
     def _matrix_coordinates(name: str) -> tuple[int, int] | None:
         prefix = "tof.array.r"
         if not name.startswith(prefix):
@@ -2214,6 +2293,8 @@ class RobotDebugGUI(QMainWindow):
         value: Any,
         robot_timestamp: Any,
     ):
+        if self._inactive_sensor_signal(name):
+            return
         now = time.monotonic()
         self.telemetry_event_times.append(now)
         self.last_telemetry_monotonic = now
@@ -2227,11 +2308,15 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry[
             name
         ] = value
+        if self.drum_held and name in ("navigation.active", "drive.active") and value is True:
+            self._stop_drum_hold()
 
         # ArenaView groups all signals sharing one robot timestamp into a
         # coherent pose/range frame. Feed it before matrix zones are hidden
         # from the large dashboard table below.
         self.arena_view.receive_telemetry(name, value, robot_timestamp)
+        if name == "navigation.state":
+            self.mission_view.update_live_candidates(self.arena_view.model)
 
         if (
             isinstance(
@@ -2366,7 +2451,6 @@ class RobotDebugGUI(QMainWindow):
         self.clear_plots()
 
         self.tof_view.reset()
-        self.colour_card.refresh(None)
 
         self.start_time = time.monotonic()
 
@@ -2695,6 +2779,9 @@ class RobotDebugGUI(QMainWindow):
         if name == "drive_set":
             self.drive_command_available = True
             self._update_drive_controls()
+        if name == "drum_set":
+            self.drum_command_available = True
+            self._update_drum_controls()
 
         if name not in self.command_widgets:
             command_widget = CommandWidget(
@@ -2732,6 +2819,10 @@ class RobotDebugGUI(QMainWindow):
         name: str,
         arguments: dict,
     ):
+        if name in ("stop", "set_debug_mode") and (
+            name == "stop" or arguments.get("enabled") is False
+        ):
+            self._stop_drum_hold()
         self.recorder.record_command(
             name,
             arguments,
@@ -2839,6 +2930,7 @@ class RobotDebugGUI(QMainWindow):
         if debug_enabled is not None:
             self.robot_debug_mode = bool(debug_enabled)
             self._update_drive_controls()
+            self._update_drum_controls()
 
         if debug_enabled is True:
             self.statusBar().showMessage(
@@ -2877,6 +2969,7 @@ class RobotDebugGUI(QMainWindow):
             self.stop_recording()
 
         self._set_drive_armed(False)
+        self._stop_drum_hold()
         self.bluetooth.disconnect_port()
 
         event.accept()

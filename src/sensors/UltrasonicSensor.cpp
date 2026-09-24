@@ -3,6 +3,10 @@
 
 UltrasonicSensor* UltrasonicSensor::instances_[ULTRASONIC_MAX_INSTANCES] = {nullptr, nullptr, nullptr, nullptr};
 uint8_t UltrasonicSensor::instanceCount_ = 0;
+uint32_t UltrasonicSensor::lastAnyPingUs_ = 0;
+bool UltrasonicSensor::anyPingStarted_ = false;
+UltrasonicSensor* UltrasonicSensor::activeSensor_ = nullptr;
+uint8_t UltrasonicSensor::nextSlot_ = 0;
 
 UltrasonicSensor::UltrasonicSensor(const char* name, uint8_t trigPin, uint8_t echoPin,
                                     uint32_t pingIntervalMs)
@@ -30,6 +34,7 @@ bool UltrasonicSensor::begin() {
         case 3: attachInterrupt(digitalPinToInterrupt(echoPin_), isrTrampoline3, CHANGE); break;
         default: return false;
     }
+    lastTriggerMs_ = millis() - pingIntervalMs_;
     return true;
 }
 
@@ -42,28 +47,63 @@ void UltrasonicSensor::triggerPing() {
 }
 
 void UltrasonicSensor::update() {
-    unsigned long now = millis();
-    if (now - lastTriggerMs_ >= pingIntervalMs_) {
-        lastTriggerMs_ = now;
-        triggerPing();
+    const uint32_t nowUs = micros();
+    if (waiting_) {
+        bool captured;
+        uint32_t duration;
+        noInterrupts();
+        captured = captureReady_;
+        duration = capturedUs_;
+        captureReady_ = false;
+        interrupts();
+        if (captured) {
+            const uint32_t mm = (duration * 343UL + 1000UL) / 2000UL;
+            lastValid_ = duration > 0 && duration <= 38000UL && mm >= 20 && mm <= 5000;
+            if (lastValid_) lastDistanceMM_ = static_cast<uint16_t>(mm);
+            waiting_ = false;
+            activeSensor_ = nullptr;
+        } else if (nowUs - pingStartedUs_ >= 38000UL) {
+            noInterrupts();
+            captureArmed_ = false;
+            sawRise_ = false;
+            interrupts();
+            lastValid_ = false;
+            waiting_ = false;
+            activeSensor_ = nullptr;
+        }
+        return;
     }
+    // One shared acoustic slot: at least 60 ms from the previous trigger,
+    // and never while another HC-SR04 still awaits its echo.
+    if (activeSensor_ || isrSlot_ != nextSlot_ ||
+        (anyPingStarted_ && nowUs - lastAnyPingUs_ < 60000UL) ||
+        millis() - lastTriggerMs_ < pingIntervalMs_) return;
+    noInterrupts();
+    captureReady_ = false;
+    sawRise_ = false;
+    captureArmed_ = true;
+    interrupts();
+    activeSensor_ = this;
+    nextSlot_ = (nextSlot_ + 1) % instanceCount_;
+    lastAnyPingUs_ = nowUs;
+    anyPingStarted_ = true;
+    pingStartedUs_ = nowUs;
+    lastTriggerMs_ = millis();
+    waiting_ = true;
+    triggerPing();
 }
 
 void UltrasonicSensor::handleEchoEdge() {
+    if (!captureArmed_) return;
     if (digitalRead(echoPin_) == HIGH) {
         echoStartUs_ = micros();
+        sawRise_ = true;
         return;
     }
-
-    uint32_t duration = micros() - echoStartUs_;
-    if (duration == 0 || duration > 38000UL) { // ~38ms is this sensor family's own no-echo timeout
-        lastValid_ = false;
-        return;
-    }
-
-    // speed of sound ~343 m/s = 0.343 mm/us round trip -> 0.1715 mm/us one-way
-    lastDistanceMM_ = (uint16_t)(duration * 343UL / 2000UL);
-    lastValid_ = true;
+    if (!sawRise_) return;
+    capturedUs_ = micros() - echoStartUs_;
+    captureReady_ = true;
+    captureArmed_ = false;
 }
 
 void UltrasonicSensor::isrTrampoline0() { if (instances_[0]) instances_[0]->handleEchoEdge(); }

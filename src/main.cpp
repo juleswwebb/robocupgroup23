@@ -30,6 +30,7 @@
 #include "Navigation.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
+#include "DrumControl.h"
 #include "Console.h"
 #include "DebugProtocol.h"
 #include "sensor_config.h"
@@ -165,7 +166,6 @@ Task tPrint_encoders(ENCODERS_PRINT_PERIOD, ENCODERS_NUM_EXECUTE, &encoders_prin
 
 // Task to print the servo's current commanded state (see ServoControl.h/.cpp)
 // - no update task, it's set directly by console commands, nothing to poll.
-Task tPrint_servo_control(SERVO_CONTROL_PRINT_PERIOD, SERVO_CONTROL_NUM_EXECUTE, &servo_control_print);
 
 // Task for the serial command console (see Console.h/.cpp)
 Task tUpdate_console(CONSOLE_UPDATE_PERIOD, CONSOLE_NUM_EXECUTE, &console_update);
@@ -175,6 +175,7 @@ Task tUpdate_debug_protocol(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXE
 // Enforces the short command watchdog that makes the drive outputs neutral
 // if the GUI connection or a keyboard event disappears.
 Task tUpdate_drive_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drive_control_update);
+Task tUpdate_drum_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drum_control_update);
 Task tUpdate_navigation(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &navigation_update);
 
 Scheduler taskManager;
@@ -228,10 +229,9 @@ static void set_sensor_debug_prints_enabled(bool enabled) {
 static void on_debug_json_mode_changed(bool json_active) {
   if (json_active) {
     set_sensor_debug_prints_enabled(false);
-    tPrint_servo_control.disable();
   } else {
+    drum_control_stop();
     set_sensor_debug_prints_enabled(!testMode);
-    tPrint_servo_control.enable();
   }
 }
 
@@ -239,11 +239,7 @@ static void print_console_help() {
   Print& out = console_output();
   out.println("Commands:");
   out.println("  mode sensors            - show all sensor debug prints (default)");
-  out.println("  mode test               - hide sensor prints, just show servo state");
-  out.println("  servo us <500-2500>     - set the servo's raw pulse width directly");
-  out.println("  servo speed <-100..100> - set speed as a percentage (0 = stop)");
-  out.println("  servo angle <0-180>     - set a position (for a positional servo)");
-  out.println("  servo stop              - shorthand for \"servo speed 0\"");
+  out.println("  mode test               - hide sensor prints for actuator testing");
   out.println("  drive <left> <right>    - main drive motors, -100 to 100");
   out.println("  drive stop              - neutral both main drive motors");
   out.println("  help                    - show this list");
@@ -255,7 +251,7 @@ static void handle_console_command(const char* command, const char* args) {
     if (strcmp(args, "test") == 0) {
       testMode = true;
       set_sensor_debug_prints_enabled(false);
-      out.println("mode: test (sensor prints hidden, servo prints still shown)");
+      out.println("mode: test (sensor prints hidden)");
     } else if (strcmp(args, "sensors") == 0) {
       testMode = false;
       // Also drops JSON mode, so this is the way back to readable output
@@ -267,31 +263,7 @@ static void handle_console_command(const char* command, const char* args) {
       out.println("usage: mode <sensors|test>");
     }
   } else if (strcmp(command, "servo") == 0) {
-    // Manual split on the first space instead of sscanf("%s %d", ...) -
-    // sscanf pulls in newlib's whole format parser for a trivial job.
-    char sub[16] = {0};
-    const char* valueText = strchr(args, ' ');
-    size_t subLen = valueText ? (size_t)(valueText - args) : strlen(args);
-    if (subLen >= sizeof(sub)) subLen = sizeof(sub) - 1;
-    memcpy(sub, args, subLen);
-    sub[subLen] = '\0';
-    int value = valueText ? atoi(valueText + 1) : 0;
-    bool hasValue = (valueText != nullptr);
-
-    if (strcmp(sub, "us") == 0 && hasValue) {
-      servo_control_set_microseconds(value);
-    } else if (strcmp(sub, "speed") == 0 && hasValue) {
-      servo_control_set_speed(value);
-    } else if (strcmp(sub, "angle") == 0 && hasValue) {
-      servo_control_set_angle(value);
-    } else if (strcmp(sub, "stop") == 0) {
-      servo_control_set_speed(0);
-    } else {
-      out.println("usage: servo <us|speed|angle> <value>   or   servo stop");
-    }
-    out.print("servo_control: ");
-    out.print(servo_control_get_microseconds());
-    out.println(" us");
+    out.println("servo unavailable: D28/D29 are assigned to the drum motors");
   } else if (strcmp(command, "drive") == 0) {
     if (strcmp(args, "stop") == 0) {
       drive_control_stop();
@@ -343,8 +315,8 @@ void setup() {
   imu_init();              // brings up the Wire1 IMU (BNO055)
   inductive_init();        // brings up the inductive proximity sensor pin
   encoders_init();         // brings up the encoder pins + interrupts
-  servo_control_init();    // attaches the D28/D29 servo test pins
   drive_control_init();    // D7/D8 drive ESCs; starts safely at neutral
+  drum_control_init();     // D28/D29 drum outputs, neutral at boot
   navigation_init();       // autonomous navigation remains disabled at boot
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
@@ -391,6 +363,7 @@ void task_init() {
   // driver is slow or faulty, STOP/drive watchdog and app commands must still
   // be serviced before entering that driver.
   taskManager.addTask(tUpdate_drive_control);
+  taskManager.addTask(tUpdate_drum_control);
   taskManager.addTask(tUpdate_console);
   taskManager.addTask(tUpdate_debug_protocol);
   taskManager.addTask(tUpdate_navigation);
@@ -421,7 +394,6 @@ void task_init() {
   taskManager.addTask(tUpdate_inductive);
   taskManager.addTask(tPrint_inductive);
   taskManager.addTask(tPrint_encoders);
-  taskManager.addTask(tPrint_servo_control);
 
   // Enable the tasks
   taskManager.enableAll();

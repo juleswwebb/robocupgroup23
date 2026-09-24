@@ -1,10 +1,5 @@
 #include "ServoControl.h"
-#include "sensor_config.h"
 #include <Arduino.h>
-#include <Servo.h>
-
-static Servo servoD28;
-static Servo servoD29;
 
 #define SERVO_STOP_US 1500
 #define SERVO_MIN_US   500
@@ -13,15 +8,12 @@ static Servo servoD29;
 static int currentMicroseconds = SERVO_STOP_US;
 
 void servo_control_init() {
-    servoD28.attach(SERVO_D28_PIN);
-    servoD29.attach(SERVO_D29_PIN);
-    servo_control_set_microseconds(SERVO_STOP_US);
+    // Retired: D28/D29 now belong exclusively to the drum controller.
+    currentMicroseconds = SERVO_STOP_US;
 }
 
 void servo_control_set_microseconds(int microseconds) {
     currentMicroseconds = constrain(microseconds, SERVO_MIN_US, SERVO_MAX_US);
-    servoD28.writeMicroseconds(currentMicroseconds);
-    servoD29.writeMicroseconds(currentMicroseconds);
 }
 
 void servo_control_set_speed(int percent) {
@@ -31,9 +23,7 @@ void servo_control_set_speed(int percent) {
 
 void servo_control_set_angle(int degrees) {
     degrees = constrain(degrees, 0, 180);
-    servoD28.write(degrees);
-    servoD29.write(degrees);
-    currentMicroseconds = servoD28.readMicroseconds();
+    currentMicroseconds = map(degrees, 0, 180, SERVO_MIN_US, SERVO_MAX_US);
 }
 
 int servo_control_get_microseconds() { return currentMicroseconds; }

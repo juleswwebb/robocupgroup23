@@ -97,6 +97,8 @@ class SerialWorker(QThread):
 
         self._tx_queue: queue.Queue[str] = queue.Queue()
         self._rx_buffer = bytearray()
+        self._last_telemetry_at = time.monotonic()
+        self._last_recovery_hello_at = time.monotonic()
 
     # -----------------------------------------------------------------
 
@@ -115,12 +117,15 @@ class SerialWorker(QThread):
             return
 
         self.connected.emit(self.port)
+        self._last_telemetry_at = time.monotonic()
+        self._last_recovery_hello_at = self._last_telemetry_at
 
         try:
             while not self._stop_event.is_set():
 
                 self._process_transmit_queue()
                 self._process_receive()
+                self._recover_stale_telemetry()
 
         except Exception as exc:
             if not self._stop_event.is_set():
@@ -191,6 +196,8 @@ class SerialWorker(QThread):
                 try:
                     message = json.loads(text)
                     if isinstance(message, dict):
+                        if message.get("type") == "telemetry":
+                            self._last_telemetry_at = time.monotonic()
                         self.message_received.emit(message)
                 except json.JSONDecodeError:
                     pass
@@ -202,6 +209,20 @@ class SerialWorker(QThread):
         except serial.SerialException as exc:
             self.error.emit(str(exc))
             self._stop_event.set()
+
+    def _recover_stale_telemetry(self):
+        """Reclaim the robot's single active stream after a lost hello or USB takeover.
+
+        A Bluetooth catalogue can take several seconds to arrive, so retry
+        slowly; repeated hellos would otherwise flood the CH9143 link.
+        """
+        now = time.monotonic()
+        if (now - self._last_telemetry_at >= 12.0
+                and now - self._last_recovery_hello_at >= 12.0):
+            self._last_recovery_hello_at = now
+            self.send_text(json.dumps({
+                "type": "hello", "client": "RobotDebugGUI", "protocol": 1,
+            }, separators=(",", ":")))
 
     # -----------------------------------------------------------------
 
