@@ -133,10 +133,26 @@ zone, draggable start/real weights/dummy weights/walls/ramps/tubes, adjustable
 obstacle dimensions and clearance, and a route through real weights with an
 optional return-home leg. Hollow pink circles are unconfirmed live TOF weight
 candidates transformed from the Arena View pose. The plan is saved in desktop
-settings, but **it is not uploaded to the Teensy and cannot drive the robot**.
-Calibrate encoder distance, pose origin and sensor directions before attempting
-firmware waypoint following. Run offline planner regressions with
-`python -m unittest test_arena_planner test_mission_layout` in this directory.
+settings. After planning, **FOLLOW ROUTE** can command the existing drive
+motors from the desktop app over USB or Bluetooth. It requires Debug Mode,
+fresh encoder/gyro telemetry, a healthy 8×8 ToF frame, a stopped robot,
+and explicit confirmation that the physical start pose matches the marked
+start and arrow. The app must remain open and connected; it sends fresh
+commands every 100 ms while the Teensy's independent 300 ms drive watchdog
+remains active. Each moving wheel is commanded at 80–100% because this
+drivetrain stalls below 80%; route start requests and waits for confirmation
+of a 100% firmware drive limit. A healthy all-out-of-range 8×8 frame is clear
+space and permits movement; a failed/missing frame-health signal stops the
+route, so upload the matching firmware. The wider 800 mm forward obstacle stop,
+missing/stale telemetry, pose jumps,
+excess path deviation, no progress, operator takeover, and STOP all halt the
+route. The follower does **not** collect weights, unload, upload the route to
+the Teensy, or replan around a new obstacle. Arena View's separate route remains
+preview-only. Because 80% is a high minimum output, begin hardware testing
+with the wheels raised and then in a clear, supervised area with an accessible
+STOP button;
+these are provisional odometry scales, not absolute arena localisation. Run
+offline regressions with `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tools/debug_gui -p 'test_*.py'` from the repo root.
 
 Parameters (Parameters tab, live-tunable):
 

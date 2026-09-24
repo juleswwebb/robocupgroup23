@@ -67,8 +67,9 @@ from BluetoothSerial import BluetoothSerial
 from DataRecorder import DataRecorder
 from tof_view import TofView
 from wiring import HardwareMap, WiringPanel
-from arena_view import ArenaView
+from arena_view import ArenaView, number
 from mission_view import MissionPlannerView
+from route_follower import FRONT_STOP_MM, RouteFollower, prepare_route
 
 
 
@@ -329,6 +330,11 @@ class RobotDebugGUI(QMainWindow):
         self.drum_held = False
         self.drum_latched = False
         self.robot_debug_mode = False
+        self.route_follower = None
+        self.route_last_frame_monotonic = None
+        self.route_started_at = None
+        self.route_awaiting_pose = False
+        self.route_awaiting_limit = False
 
         # Recording metadata / parameter snapshot support.
         self.parameter_definitions = {}
@@ -387,6 +393,9 @@ class RobotDebugGUI(QMainWindow):
         self.drum_keepalive_timer = QTimer(self)
         self.drum_keepalive_timer.timeout.connect(self._send_drum_command)
         self.drum_keepalive_timer.start(100)
+        self.route_timer = QTimer(self)
+        self.route_timer.timeout.connect(self._mission_route_step)
+        self.route_timer.start(100)
 
         self.apply_device_names()
 
@@ -1269,6 +1278,8 @@ class RobotDebugGUI(QMainWindow):
         if armed and not self._drive_controls_available():
             self._set_drive_armed(False)
             return
+        if armed:
+            self._stop_mission_route("Manual keyboard drive armed")
         if not armed:
             self.drive_keys.clear()
             self._send_drive_stop()
@@ -1281,6 +1292,8 @@ class RobotDebugGUI(QMainWindow):
 
     def _on_drive_speed_changed(self, value: int):
         self.drive_speed_label.setText(f"{value}%")
+        if value < 80:
+            self._stop_mission_route("Drive speed limit set below 80%")
         if self._drive_controls_available():
             self.bluetooth.set_parameter("drive.max_percent", value)
 
@@ -1311,6 +1324,8 @@ class RobotDebugGUI(QMainWindow):
         if not self._drive_controls_available() or not self.drive_arm_checkbox.isChecked():
             return
         left, right = self._keyboard_drive_values()
+        if (left or right) and self.route_follower is not None:
+            self._stop_mission_route("Manual keyboard drive")
         if (left or right) and (self.drum_held or self.drum_latched):
             self._stop_drum_hold()
         self.bluetooth.send_command("drive_set", left=left, right=right)
@@ -1356,6 +1371,7 @@ class RobotDebugGUI(QMainWindow):
                 self._send_drive_stop()
             if self.drum_held:
                 self._stop_drum_hold()
+            self._stop_mission_route("App lost focus")
         super().changeEvent(event)
 
     # =================================================================
@@ -1534,8 +1550,14 @@ class RobotDebugGUI(QMainWindow):
         )
         self.arena_view.command_requested.connect(self.execute_command)
         self.arena_view.parameter_requested.connect(self._set_arena_parameter)
+        self.arena_view.pose_configuration_changed.connect(
+            lambda: self._stop_mission_route("Arena pose or calibration changed")
+        )
         self.tabs.addTab(self.arena_view, "Arena View")
         self.mission_view = MissionPlannerView(self.settings)
+        self.mission_view.follow_requested.connect(self._start_mission_route)
+        self.mission_view.stop_requested.connect(lambda: self._stop_mission_route("Stopped by operator"))
+        self.mission_view.route_changed.connect(lambda: self._stop_mission_route("Route changed"))
         self.tabs.addTab(self.mission_view, "Mission Planner")
 
     def _set_arena_parameter(self, name: str, value: Any):
@@ -1543,6 +1565,143 @@ class RobotDebugGUI(QMainWindow):
         self.recorder.record_parameter(name, value)
         self.bluetooth.set_parameter(name, value)
         self.add_log("TX", f"{name} = {value}")
+
+    @staticmethod
+    def _route_front_range(frame: dict) -> float | None:
+        # Same central/top field used by firmware navigation. Bottom rows
+        # often see the floor or chassis and are not a forward collision ray.
+        values = [number(frame.get(f"tof.array.r{row}c{col}"))
+                  for row in range(6) for col in range(2, 6)]
+        valid = [value for value in values if value is not None and 0 < value < 4000]
+        return min(valid) if valid else None
+
+    def _start_mission_route(self):
+        if self.route_follower is not None:
+            return
+        reason = None
+        if not self._drive_controls_available():
+            reason = "Connect the robot, enter Debug Mode, and wait for drive control."
+        elif self.drive_arm_checkbox.isChecked() or self.drum_held or self.drum_latched:
+            reason = "Disarm manual drive and stop the drums first."
+        elif self.telemetry.get("navigation.active") or self.telemetry.get("drive.active") or self.telemetry.get("drum.active"):
+            reason = "Stop existing motor activity before starting the route."
+        elif (self.route_last_frame_monotonic is None
+              or time.monotonic() - self.route_last_frame_monotonic > 1.25):
+            reason = "No fresh complete robot telemetry frame."
+        frame = self.arena_view.model.latest
+        if reason is None and (number(frame.get("encoder.0")) is None
+                               or number(frame.get("encoder.1")) is None
+                               or number(frame.get("imu.heading")) is None
+                               or (number(frame.get("imu.cal_gyro")) or 0) < 2):
+            reason = "Need both encoders and a valid, gyro-calibrated IMU."
+        if reason is None and frame.get("tof.array_frame_ok") is not True:
+            reason = "No healthy 8×8 ToF frame. Upload the updated firmware if this signal is missing."
+        front_mm = self._route_front_range(frame)
+        if reason is None and front_mm is not None and front_mm < FRONT_STOP_MM:
+            reason = f"Forward obstacle is within {FRONT_STOP_MM} mm."
+        if reason is None:
+            try:
+                points = prepare_route(self.mission_view.model)
+            except (ValueError, KeyError, TypeError) as exc:
+                reason = str(exc)
+        if reason:
+            self.mission_view.set_follow_status(f"Cannot start: {reason}")
+            return
+        answer = QMessageBox.question(
+            self, "Start supervised route following?",
+            "Confirm the physical robot is stationary at the marked start, aligned "
+            "with the start arrow, and the arena is clear. Moving wheel commands "
+            "will be at least 80%; the drive limit will be set to 100%. "
+            "The app must stay "
+            "connected; STOP or loss of pose/8×8 frame health halts the motors. "
+            "This follows waypoints only — it does not collect weights or unload.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.arena_view.reset_map()
+        self.mission_view.canvas.robot_pose = None
+        self.route_last_frame_monotonic = None
+        self.route_started_at = time.monotonic()
+        self.route_awaiting_pose = True
+        self.route_awaiting_limit = True
+        self.route_follower = RouteFollower(points)
+        self.drive_speed_slider.blockSignals(True)
+        self.drive_speed_slider.setValue(100)
+        self.drive_speed_slider.blockSignals(False)
+        self.drive_speed_label.setText("100%")
+        self.parameter_values.pop("drive.max_percent", None)
+        self.bluetooth.set_parameter("drive.max_percent", 100)
+        self.recorder.record_parameter("drive.max_percent", 100)
+        self.mission_view.set_follow_status("Waiting for drive-limit confirmation and fresh pose…", active=True, waypoint=0)
+        self.add_log("INFO", f"Route armed: {len(points)} waypoints; requested 100% drive limit")
+
+    def _stop_mission_route(self, reason="Stopped", *, send_stop=True):
+        if self.route_follower is None:
+            return
+        self.route_follower = None
+        self.route_awaiting_pose = False
+        self.route_awaiting_limit = False
+        self.route_started_at = None
+        if send_stop and self.bluetooth.is_connected():
+            self.bluetooth.send_command("stop")
+            self.recorder.record_command("stop", {})
+        self.mission_view.set_follow_status(f"Route stopped: {reason}")
+        self.add_log("WARN", f"Route stopped: {reason}")
+
+    def _mission_route_step(self):
+        follower = self.route_follower
+        if follower is None:
+            return
+        now = time.monotonic()
+        if not self._drive_controls_available() or self.telemetry.get("navigation.active"):
+            self._stop_mission_route("Drive control or Debug Mode lost")
+            return
+        if self.route_started_at is not None and now - self.route_started_at > 120:
+            self._stop_mission_route("120 s route time limit")
+            return
+        if self.route_awaiting_limit:
+            if number(self.parameter_values.get("drive.max_percent")) != 100:
+                if now - self.route_started_at > 2.5:
+                    self._stop_mission_route("Drive limit 100% was not confirmed")
+                return
+            self.route_awaiting_limit = False
+        elif (number(self.parameter_values.get("drive.max_percent")) or 0) < 80:
+            self._stop_mission_route("Drive limit fell below 80%")
+            return
+        if self.route_awaiting_pose:
+            if self.route_last_frame_monotonic is None:
+                if now - self.route_started_at > 2.5:
+                    self._stop_mission_route("Start pose did not arrive")
+                return
+            self.route_awaiting_pose = False
+        if (self.route_last_frame_monotonic is None
+                or now - self.route_last_frame_monotonic > 1.25):
+            self._stop_mission_route("Telemetry stale for more than 1.25 s")
+            return
+        frame = self.arena_view.model.latest
+        if (number(frame.get("encoder.0")) is None
+                or number(frame.get("encoder.1")) is None
+                or number(frame.get("imu.heading")) is None
+                or (number(frame.get("imu.cal_gyro")) or 0) < 2):
+            self._stop_mission_route("Encoder or IMU pose invalid")
+            return
+        if frame.get("tof.array_frame_ok") is not True:
+            self._stop_mission_route("8×8 ToF frame read failed or health signal missing")
+            return
+        model = self.arena_view.model
+        decision = follower.step(model.x, model.y, model.theta,
+                                 self._route_front_range(frame), now)
+        self.mission_view.set_robot_pose(model.x, model.y, model.theta)
+        if decision.done or decision.fault:
+            self._stop_mission_route(decision.detail)
+            return
+        self.bluetooth.send_command("drive_set", left=decision.left, right=decision.right)
+        self.recorder.record_command("drive_set", {"left": decision.left, "right": decision.right})
+        self.mission_view.set_follow_status(
+            f"{decision.state} · {decision.detail}", active=True, waypoint=follower.index
+        )
 
     # =================================================================
     # Wiring
@@ -2243,6 +2402,8 @@ class RobotDebugGUI(QMainWindow):
         else:
             self.connected_since_monotonic = None
             self.last_telemetry_monotonic = None
+            self._stop_mission_route("Disconnected", send_stop=False)
+            self.route_last_frame_monotonic = None
             self.robot_debug_mode = False
             self._stop_drum_hold()
             self.drum_command_available = False
@@ -2392,6 +2553,10 @@ class RobotDebugGUI(QMainWindow):
         # coherent pose/range frame. Feed it before matrix zones are hidden
         # from the large dashboard table below.
         self.arena_view.receive_telemetry(name, value, robot_timestamp)
+        if name == "system.uptime_ms" and robot_timestamp is not None:
+            self.arena_view.model.finish_frame()
+            self.route_last_frame_monotonic = now
+            self.arena_view._refresh()
         if name == "navigation.state":
             self.mission_view.update_live_candidates(self.arena_view.model)
 
@@ -2896,6 +3061,12 @@ class RobotDebugGUI(QMainWindow):
         name: str,
         arguments: dict,
     ):
+        if name == "stop":
+            self._stop_mission_route("STOP pressed", send_stop=False)
+        elif name in ("drive_set", "navigation_set"):
+            self._stop_mission_route("Another drive command took control")
+        elif name == "set_debug_mode" and arguments.get("enabled") is False:
+            self._stop_mission_route("Debug Mode exited")
         if name in ("stop", "set_debug_mode") and (
             name == "stop" or arguments.get("enabled") is False
         ):
@@ -3006,6 +3177,8 @@ class RobotDebugGUI(QMainWindow):
         debug_enabled = state.get("debug_mode")
         if debug_enabled is not None:
             self.robot_debug_mode = bool(debug_enabled)
+            if not self.robot_debug_mode:
+                self._stop_mission_route("Debug Mode exited", send_stop=False)
             self._update_drive_controls()
             self._update_drum_controls()
 
@@ -3046,6 +3219,7 @@ class RobotDebugGUI(QMainWindow):
             self.stop_recording()
 
         self._set_drive_armed(False)
+        self._stop_mission_route("App closing")
         self._stop_drum_hold()
         self.bluetooth.disconnect_port()
 

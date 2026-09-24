@@ -363,6 +363,7 @@ class ArenaCanvas(QWidget):
 class ArenaView(QWidget):
     command_requested = pyqtSignal(str, dict)
     parameter_requested = pyqtSignal(str, object)
+    pose_configuration_changed = pyqtSignal()
 
     def __init__(self, settings, hardware_map, parent=None):
         super().__init__(parent)
@@ -723,6 +724,7 @@ class ArenaView(QWidget):
                            ("invert_right", m.invert_right), ("matrix_fov", m.matrix_fov_deg),
                            ("matrix_mirror", m.matrix_mirrored)):
             self.settings.setValue("arena/" + key, value)
+        self.pose_configuration_changed.emit()
 
     def _apply_navigation(self):
         self.parameter_requested.emit("navigation.speed_percent", self.nav_speed.value())
@@ -778,6 +780,7 @@ class ArenaView(QWidget):
         )
 
     def reset_map(self):
+        self.pose_configuration_changed.emit()
         self.model.reset(); self.canvas.update()
 
     def receive_telemetry(self, name, value, timestamp):

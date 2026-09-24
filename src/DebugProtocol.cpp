@@ -182,6 +182,7 @@ static void send_telemetry_definitions() {
 
     send_telemetry_definition("tof.array_min", "8x8 nearest valid zone", "8x8 TOF", "mm");
     send_telemetry_definition("tof.array_valid_zones", "8x8 valid zones", "8x8 TOF", "zones", false);
+    send_telemetry_definition("tof.array_frame_ok", "8x8 frame read OK", "8x8 TOF", "", false);
 
     char zoneName[24];
     char zoneLabel[24];
@@ -473,6 +474,10 @@ void debug_protocol_send_telemetry() {
 
     uint16_t grid[64];
     const bool gridAvailable = distance_sensors_get_8x8_grid(grid);
+    // A valid all-4000 frame means open space, not a failed sensor. Zone
+    // values alone cannot distinguish those cases after invalid zones become
+    // null in telemetry, so send frame health separately.
+    data["tof.array_frame_ok"] = gridAvailable;
     uint16_t closest = 0;
     uint8_t validZones = 0;
     char zoneName[24];

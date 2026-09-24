@@ -1,4 +1,4 @@
-"""Graphical pre-laid arena editor for Group 23 (desktop planning only)."""
+"""Graphical arena editor and supervised route controls for Group 23."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ class MissionCanvas(QWidget):
         self.selected = None
         self.dragging = False
         self.live_candidates = []
+        self.robot_pose = None
+        self.active_waypoint = None
         self.setMinimumSize(700, 400)
 
     def _geometry(self):
@@ -165,6 +167,16 @@ class MissionCanvas(QWidget):
                 p.drawLine(before, after)
                 if waypoint["target"]: p.drawEllipse(after, 5, 5)
                 before = after
+        if self.active_waypoint is not None and 0 <= self.active_waypoint < len(m.route):
+            target = m.route[self.active_waypoint]
+            p.setPen(QPen(QColor("#fff2a8"), 3)); p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(self._point(target["x"], target["y"]), 12, 12)
+        if self.robot_pose is not None:
+            x, y, heading_deg = self.robot_pose
+            p.setPen(QPen(QColor("#ffffff"), 2)); p.setBrush(QColor("#3d8bfd"))
+            p.drawEllipse(self._point(x, y), 9, 9)
+            angle = math.radians(heading_deg)
+            p.drawLine(self._point(x, y), self._point(x + 140*math.cos(angle), y + 140*math.sin(angle)))
         p.setPen(QPen(QColor("#ffffff"), 2)); p.setBrush(QColor("#3d8bfd"))
         origin = self._point(*m.start)
         p.drawEllipse(origin, 8, 8)
@@ -174,6 +186,10 @@ class MissionCanvas(QWidget):
 
 
 class MissionPlannerView(QWidget):
+    follow_requested = pyqtSignal()
+    stop_requested = pyqtSignal()
+    route_changed = pyqtSignal()
+
     def __init__(self, settings, parent=None):
         super().__init__(parent)
         self.settings = settings
@@ -197,12 +213,25 @@ class MissionPlannerView(QWidget):
         self.heading.setCurrentIndex(int(round(self.model.heading_deg/90)) % 4)
         self.heading.currentIndexChanged.connect(self._heading_changed)
         toolbar.addWidget(QLabel("Start heading")); toolbar.addWidget(self.heading)
-        plan = QPushButton("PLAN WEIGHT ROUTE"); plan.setObjectName("primaryButton")
-        plan.clicked.connect(self._plan)
-        toolbar.addWidget(plan)
         self.return_home = QCheckBox("Return home after weights")
+        self.return_home.toggled.connect(lambda _checked: self._changed())
         toolbar.addWidget(self.return_home)
         toolbar.addStretch(); root.addLayout(toolbar)
+        route_controls = QHBoxLayout()
+        plan = QPushButton("PLAN WEIGHT ROUTE"); plan.setObjectName("primaryButton")
+        plan.clicked.connect(self._plan)
+        route_controls.addWidget(plan)
+        self.follow_button = QPushButton("FOLLOW ROUTE")
+        self.follow_button.setObjectName("primaryButton")
+        self.follow_button.setEnabled(False)
+        self.follow_button.clicked.connect(lambda: self.follow_requested.emit())
+        route_controls.addWidget(self.follow_button)
+        self.stop_button = QPushButton("STOP ROUTE")
+        self.stop_button.setObjectName("dangerButton")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(lambda: self.stop_requested.emit())
+        route_controls.addWidget(self.stop_button)
+        route_controls.addStretch(); root.addLayout(route_controls)
         body = QHBoxLayout()
         self.canvas = MissionCanvas(self.model)
         self.tool.currentTextChanged.connect(lambda mode: setattr(self.canvas, "tool", mode))
@@ -233,8 +262,10 @@ class MissionPlannerView(QWidget):
         delete = QPushButton("Delete selected"); delete.clicked.connect(self.canvas.delete_selected)
         form.addRow(delete)
         body.addWidget(panel); root.addLayout(body, 1)
-        self.status = QLabel("Place the start, known obstacles, and real/dummy weights. Route preview never commands the motors.")
+        self.status = QLabel("Plan a route, then FOLLOW to command the robot from this app. Marked start and heading must match the physical robot.")
         self.status.setWordWrap(True); root.addWidget(self.status)
+        self.follow_status = QLabel("Route follower idle · robot stays stopped")
+        self.follow_status.setWordWrap(True); root.addWidget(self.follow_status)
         self.live_status = QLabel("Live weight candidates: 0 (hollow pink; requires calibrated start and odometry)")
         root.addWidget(self.live_status)
         self._selection_changed()
@@ -289,15 +320,36 @@ class MissionPlannerView(QWidget):
 
     def _changed(self):
         self.model.route = []
+        self.follow_button.setEnabled(False)
+        self.route_changed.emit()
         self.settings.setValue("arena/mission_layout", json.dumps(self.model.to_dict()))
         self.canvas.update()
 
     def _plan(self):
+        self.route_changed.emit()
         if self.model.plan(self.return_home.isChecked()):
             real = sum(not item["dummy"] for item in self.model.weights)
             self.status.setText(f"Desktop route: {len(self.model.route)} waypoints through {real} real weights"
                                 + (" and back home" if self.return_home.isChecked() else "")
-                                + ". Not uploaded to robot.")
+                                + ". Ready for supervised desktop following.")
         else:
             self.status.setText("Route unavailable: " + self.model.error)
+        self.follow_button.setEnabled(bool(self.model.route))
+        self.canvas.update()
+
+    def set_follow_status(self, text, *, active=False, waypoint=None):
+        self.follow_status.setText(text)
+        self.follow_button.setEnabled(bool(self.model.route) and not active)
+        self.stop_button.setEnabled(active)
+        self.canvas.active_waypoint = waypoint if active else None
+        self.canvas.update()
+
+    def set_robot_pose(self, right_mm, forward_mm, heading_rad):
+        theta = math.radians(self.model.heading_deg)
+        sx, sy = self.model.start
+        self.canvas.robot_pose = (
+            sx + forward_mm * math.cos(theta) - right_mm * math.sin(theta),
+            sy + forward_mm * math.sin(theta) + right_mm * math.cos(theta),
+            self.model.heading_deg + 90 - math.degrees(heading_rad),
+        )
         self.canvas.update()
