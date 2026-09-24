@@ -92,12 +92,12 @@
       "port": "a0"
     },
     {
-      "name": "Encoder 0",
+      "name": "Encoder_Left",
       "kind": "encoder",
       "port": "encoder_2_3"
     },
     {
-      "name": "Encoder 1",
+      "name": "Encoder_Right",
       "kind": "encoder",
       "port": "encoder_4_5"
     }

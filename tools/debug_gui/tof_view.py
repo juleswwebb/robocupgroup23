@@ -118,6 +118,44 @@ def smooth_frames(previous: np.ndarray | None, new: np.ndarray, alpha: float) ->
     return blended
 
 
+def suppress_isolated_spikes(frame: np.ndarray) -> np.ndarray:
+    """Group 7-style spatial filter; never fill a zone with no measurement."""
+    result = frame.copy()
+    for row in range(GRID):
+        for col in range(GRID):
+            current = frame[row, col]
+            if not np.isfinite(current):
+                continue
+            neighbours = frame[max(0, row - 1):row + 2, max(0, col - 1):col + 2].copy()
+            neighbours[row - max(0, row - 1), col - max(0, col - 1)] = np.nan
+            valid = neighbours[np.isfinite(neighbours)]
+            if len(valid) < 4:
+                continue
+            median = float(np.median(valid))
+            if np.sum(np.abs(valid - median) <= 250) >= 4 and abs(current - median) > 600:
+                result[row, col] = median
+    return result
+
+
+def stable_detail(history: deque[np.ndarray], previous: np.ndarray | None,
+                  current: np.ndarray) -> np.ndarray:
+    """Visual-only temporal median: accept closer objects immediately."""
+    history.append(current.copy())
+    stack = np.stack(history)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        median = np.nanmedian(stack, axis=0)
+    if previous is None:
+        result = median
+    else:
+        result = np.where(np.isfinite(previous), 0.65 * previous + 0.35 * median, median)
+        near_jump = np.isfinite(current) & np.isfinite(previous) & (current < previous - 250)
+        result[near_jump] = current[near_jump]
+    # Never present an absent return as a fresh reading.
+    result[~np.isfinite(current)] = np.nan
+    return result
+
+
 def upsample(grid: np.ndarray, size: int) -> np.ndarray:
     """Bilinear resize of a square grid to size x size."""
     n = grid.shape[0]
@@ -253,6 +291,7 @@ def describe_angle(degrees: float, positive: str, negative: str) -> str:
 # =====================================================================
 
 SMOOTHING_LEVELS = (("Off", 0.0), ("Light", 0.3), ("Medium", 0.55), ("Heavy", 0.75))
+VIEW_MODES = ("Raw grid", "Smoothed image", "Stable detail")
 
 
 def _depth_colormap() -> pg.ColorMap:
@@ -285,6 +324,9 @@ class TofView(QWidget):
         self._raw: np.ndarray | None = None
         self._smoothed: np.ndarray | None = None
         self._display: np.ndarray | None = None
+        self._visual: np.ndarray | None = None
+        self._stable: np.ndarray | None = None
+        self._history: deque[np.ndarray] = deque(maxlen=5)
         self._objects: list[DetectedObject] = []
         self._pending = False
         self._frame_times: deque[float] = deque(maxlen=40)
@@ -316,10 +358,10 @@ class TofView(QWidget):
 
     def _load_settings(self):
         widgets = (
-            (self.smooth_image_check, "smooth_image", True),
             (self.show_values_check, "show_values", False),
             (self.mirror_check, "mirror", False),
             (self.flip_check, "flip", False),
+            (self.auto_range_check, "auto_range", False),
         )
         for widget, key, default in widgets:
             widget.blockSignals(True)
@@ -339,6 +381,11 @@ class TofView(QWidget):
             max(0, min(self._setting("smoothing", 1), len(SMOOTHING_LEVELS) - 1))
         )
         self.smoothing_combo.blockSignals(False)
+        self.view_combo.blockSignals(True)
+        self.view_combo.setCurrentIndex(max(0, min(self._setting("view_mode", 0), len(VIEW_MODES) - 1)))
+        self.view_combo.blockSignals(False)
+        self.show_values_check.setEnabled(self.view_combo.currentIndex() != 0)
+        self.range_spin.setEnabled(not self.auto_range_check.isChecked())
         self._update_background_ui()
         self._rebuild_map_guides()
 
@@ -400,6 +447,19 @@ class TofView(QWidget):
         self.fps_pill = self._pill(top)
         root.addLayout(top)
 
+        view_bar = QHBoxLayout()
+        view_bar.addWidget(QLabel("View"))
+        self.view_combo = QComboBox()
+        self.view_combo.addItems(VIEW_MODES)
+        self.view_combo.setToolTip("Raw shows sensor values; filtered modes affect only this visualisation")
+        view_bar.addWidget(self.view_combo)
+        view_bar.addWidget(QLabel("NEAR  ●  red → yellow → blue  ●  FAR"))
+        view_bar.addStretch()
+        self.view_note = QLabel("Raw sensor readings · missing returns shown as —")
+        self.view_note.setObjectName("hint")
+        view_bar.addWidget(self.view_note)
+        root.addLayout(view_bar)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
 
@@ -408,7 +468,7 @@ class TofView(QWidget):
         theme.style_plot(self.image_plot)
         item = self.image_plot.getPlotItem()
         item.showGrid(False, False)
-        item.setTitle("Depth image", color=theme.TEXT_MUTED, size="10pt")
+        item.setTitle("Distance by zone (mm) · robot left ← → right", color=theme.TEXT_MUTED, size="10pt")
         item.hideButtons()
         item.setMenuEnabled(False)
         view = item.getViewBox()
@@ -527,15 +587,15 @@ class TofView(QWidget):
         display = QGroupBox("Display")
         form = QFormLayout(display)
         form.setVerticalSpacing(6)
-        self.smooth_image_check = QCheckBox("Smooth between zones")
-        self.show_values_check = QCheckBox("Show zone values (mm)")
+        self.show_values_check = QCheckBox("Show values in filtered views")
+        self.auto_range_check = QCheckBox("Auto colour range")
         self.mirror_check = QCheckBox("Mirror left ↔ right")
         self.flip_check = QCheckBox("Flip up ↕ down")
         self.mirror_check.setToolTip(
             "Wave a hand on the sensor's left. If it appears on the right of "
             "the image, tick this."
         )
-        for check in (self.smooth_image_check, self.show_values_check,
+        for check in (self.show_values_check, self.auto_range_check,
                       self.mirror_check, self.flip_check):
             form.addRow(check)
 
@@ -625,11 +685,10 @@ class TofView(QWidget):
 
         scroll.setWidget(container)
 
-        for check, key in (
-            (self.smooth_image_check, "smooth_image"),
-            (self.show_values_check, "show_values"),
-        ):
+        for check, key in ((self.show_values_check, "show_values"),):
             check.toggled.connect(lambda on, k=key: self._on_setting(k, on))
+        self.auto_range_check.toggled.connect(self._on_auto_range_changed)
+        self.view_combo.currentIndexChanged.connect(self._on_view_changed)
         for check, key in ((self.mirror_check, "mirror"), (self.flip_check, "flip")):
             check.toggled.connect(lambda on, k=key: self._on_setting(k, on, reset_smoothing=True))
         self.smoothing_combo.currentIndexChanged.connect(
@@ -689,12 +748,26 @@ class TofView(QWidget):
         self._save_setting(key, value)
         if reset_smoothing:
             self._smoothed = None
+            if key in ("mirror", "flip"):
+                self._stable = None
+                self._history.clear()
         self._process()
         self._render()
 
     def _on_range_changed(self, value: int):
         self._save_setting("range_mm", value)
         self._rebuild_map_guides()
+        self._render()
+
+    def _on_auto_range_changed(self, enabled: bool):
+        self._save_setting("auto_range", enabled)
+        self.range_spin.setEnabled(not enabled)
+        self._render()
+
+    def _on_view_changed(self, index: int):
+        self._save_setting("view_mode", index)
+        self.show_values_check.setEnabled(index != 0)
+        self._process()
         self._render()
 
     def _on_freeze(self, frozen: bool):
@@ -713,7 +786,8 @@ class TofView(QWidget):
         self.device_label.setText(name)
 
     def reset(self):
-        self._raw = self._smoothed = self._display = None
+        self._raw = self._smoothed = self._display = self._visual = self._stable = None
+        self._history.clear()
         self._objects = []
         self._pending = False
         self._frame_times.clear()
@@ -794,6 +868,7 @@ class TofView(QWidget):
     def _process(self, advance: bool = False):
         if self._raw is None:
             self._display = None
+            self._visual = None
             self._objects = []
             return
 
@@ -802,6 +877,12 @@ class TofView(QWidget):
         if advance or self._smoothed is None:
             self._smoothed = smooth_frames(self._smoothed, oriented, alpha)
         self._display = self._smoothed
+
+        if advance:
+            self._stable = stable_detail(self._history, self._stable,
+                                         suppress_isolated_spikes(oriented))
+        mode = self.view_combo.currentIndex()
+        self._visual = oriented if mode == 0 else self._display if mode == 1 else self._stable
 
         background = None
         if self.background is not None:
@@ -818,14 +899,25 @@ class TofView(QWidget):
 
     def _render(self):
         stale = self._is_stale() and self._display is not None
-        depth = self._display
-        reach = float(self.range_spin.value())
+        depth = self._visual
+        map_depth = self._display
+        valid = depth[np.isfinite(depth)] if depth is not None else np.array([])
+        reach = float(np.clip(np.max(valid), 300, MAX_RANGE_MM)) if (
+            self.auto_range_check.isChecked() and len(valid)
+        ) else float(self.range_spin.value())
+        mode = self.view_combo.currentIndex()
+        notes = (
+            "RAW · missing returns shown as —",
+            "SMOOTHED · image and frame averages; raw data unchanged",
+            "STABLE · isolated spikes + temporal median; display only",
+        )
+        self.view_note.setText(notes[mode])
 
         # ---- image ----
         if depth is None:
             self.image_item.setImage(np.full((GRID, GRID), np.nan), levels=(0, reach))
         else:
-            if self.smooth_image_check.isChecked():
+            if mode != 0:
                 filled = np.where(np.isnan(depth), reach, np.minimum(depth, reach))
                 image = upsample(filled, self.UPSAMPLE_SIZE)
                 invalid = np.repeat(np.repeat(np.isnan(depth), self.UPSAMPLE_SIZE // GRID, 0),
@@ -838,7 +930,7 @@ class TofView(QWidget):
         self.image_item.setOpacity(0.45 if stale else 1.0)
         self.image_item.setRect(QRectF(0, 0, GRID, GRID))
 
-        show_values = self.show_values_check.isChecked() and depth is not None
+        show_values = (mode == 0 or self.show_values_check.isChecked()) and depth is not None
         if show_values:
             # Dark text on turbo's bright middle, light text on its ends.
             cell_colours = self.colormap.map(
@@ -847,20 +939,24 @@ class TofView(QWidget):
         for row in range(GRID):
             for col in range(GRID):
                 text = self.value_items[row][col]
-                if show_values and not np.isnan(depth[row, col]):
-                    r, g, b = (int(v) for v in cell_colours[row * GRID + col][:3])
-                    luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                    text.setColor("#14161a" if luminance > 150 else "#ffffff")
-                    text.setText(f"{depth[row, col]:.0f}")
+                if show_values:
+                    if np.isfinite(depth[row, col]):
+                        r, g, b = (int(v) for v in cell_colours[row * GRID + col][:3])
+                        luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                        text.setColor("#14161a" if luminance > 150 else "#ffffff")
+                        text.setText(f"{depth[row, col]:.0f}")
+                    else:
+                        text.setColor(theme.TEXT_MUTED)
+                        text.setText("—")
                     text.show()
                 else:
                     text.hide()
 
         self._render_object_boxes()
         self._render_selection()
-        self._render_map(depth)
+        self._render_map(map_depth)
         self._render_objects_table()
-        self._render_pills(depth, stale)
+        self._render_pills(map_depth, stale)
         self._render_zone_info()
 
     def _render_object_boxes(self):
@@ -987,8 +1083,8 @@ class TofView(QWidget):
         row, col = cell
         display_row, display_col = self._raw_to_display(row, col)
         value = None
-        if self._display is not None:
-            value = self._display[display_row, display_col]
+        if self._visual is not None:
+            value = self._visual[display_row, display_col]
         distance = "no target" if value is None or np.isnan(value) else f"{value:.0f} mm"
         prefix = "Hover" if cell == self._hovered and cell != self._selected else "Selected"
         self.zone_label.setText(

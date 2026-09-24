@@ -37,13 +37,22 @@ def number(value):
     return value if math.isfinite(value) else None
 
 
+# Two measured forward runs: 1805 + 1830 mm, with encoder 0 on the left
+# and encoder 1 on the right. These are provisional odometry scales.
+DEFAULT_LEFT_MM_PER_COUNT = 3635.0 / 41153.0
+DEFAULT_RIGHT_MM_PER_COUNT = 3635.0 / 42224.0
+
+
 class ArenaModel:
     def __init__(self):
-        self.left_mm_per_count = 0.095
-        self.right_mm_per_count = 0.095
+        # Provisional chassis-distance calibration from two measured forward
+        # runs (1805 mm / 20462,-20966 and 1830 mm / 20691,-21258).
+        # These are odometry defaults, not a motor-speed correction.
+        self.left_mm_per_count = DEFAULT_LEFT_MM_PER_COUNT
+        self.right_mm_per_count = DEFAULT_RIGHT_MM_PER_COUNT
         self.track_width_mm = 300.0
         self.invert_left = False
-        self.invert_right = False
+        self.invert_right = True
         self.matrix_fov_deg = 60.0
         self.matrix_mirrored = False
         self.sensor_specs = []
@@ -407,13 +416,13 @@ class ArenaView(QWidget):
         side = QWidget(); form = QFormLayout(side)
         note = QLabel("Local map only — not absolute arena localisation. Calibrate encoder scale, direction and wheel track before trusting pose or autonomous motion.")
         note.setWordWrap(True); form.addRow(note)
-        self.left_scale = self._spin(form, "Left mm/count", "left_scale", .095, 0, 10, 5)
-        self.right_scale = self._spin(form, "Right mm/count", "right_scale", .095, 0, 10, 5)
+        self.left_scale = self._spin(form, "Left mm/count", "left_scale", self.model.left_mm_per_count, 0, 10, 5)
+        self.right_scale = self._spin(form, "Right mm/count", "right_scale", self.model.right_mm_per_count, 0, 10, 5)
         self.track = self._spin(form, "Wheel track (mm)", "track", 300, 1, 2000, 1)
         self.invert_left = QCheckBox("Invert left encoder")
         self.invert_right = QCheckBox("Invert right encoder")
         self.invert_left.setChecked(settings.value("arena/invert_left", False, type=bool))
-        self.invert_right.setChecked(settings.value("arena/invert_right", False, type=bool))
+        self.invert_right.setChecked(settings.value("arena/invert_right", True, type=bool))
         self.invert_left.toggled.connect(self._calibration_changed)
         self.invert_right.toggled.connect(self._calibration_changed)
         form.addRow(self.invert_left); form.addRow(self.invert_right)
@@ -429,6 +438,10 @@ class ArenaView(QWidget):
         self.calibration_distance.setValue(1000)
         self.calibration_distance.setSuffix(" mm")
         encoder_form.addRow("Measured forward travel", self.calibration_distance)
+        use_runs = QPushButton("Use 2 measured runs (1805 + 1830 mm)")
+        use_runs.setToolTip("Applies 0.08833 / 0.08609 mm per count and reverses encoder 1 for forward travel")
+        use_runs.clicked.connect(self._apply_measured_encoder_runs)
+        encoder_form.addRow(use_runs)
         mark_start = QPushButton("1 · Capture start counts")
         mark_start.clicked.connect(self._capture_encoder_start)
         encoder_form.addRow(mark_start)
@@ -563,9 +576,30 @@ class ArenaView(QWidget):
         w = QSpinBox(); w.setRange(minimum, maximum); w.setValue(default); form.addRow(label, w); return w
 
     def _load_calibration(self):
-        self.model.left_mm_per_count = float(self.settings.value("arena/left_scale", .095))
-        self.model.right_mm_per_count = float(self.settings.value("arena/right_scale", .095))
+        # Before these measured defaults, the UI saved 0.095 for both wheels
+        # and a non-inverted right encoder. Upgrade only that exact untouched
+        # legacy combination; preserve any user-calibrated values or polarity.
+        if int(self.settings.value("arena/encoder_calibration_version", 0)) < 1:
+            old_left = self.settings.value("arena/left_scale", None)
+            old_right = self.settings.value("arena/right_scale", None)
+            try:
+                legacy_scales = (old_left is not None and old_right is not None
+                                 and abs(float(old_left) - 0.095) < 1e-8
+                                 and abs(float(old_right) - 0.095) < 1e-8)
+            except (TypeError, ValueError):
+                legacy_scales = False
+            if (legacy_scales
+                    and not self.settings.value("arena/invert_left", False, type=bool)
+                    and not self.settings.value("arena/invert_right", False, type=bool)):
+                self.settings.setValue("arena/left_scale", DEFAULT_LEFT_MM_PER_COUNT)
+                self.settings.setValue("arena/right_scale", DEFAULT_RIGHT_MM_PER_COUNT)
+                self.settings.setValue("arena/invert_right", True)
+            self.settings.setValue("arena/encoder_calibration_version", 1)
+        self.model.left_mm_per_count = float(self.settings.value("arena/left_scale", self.model.left_mm_per_count))
+        self.model.right_mm_per_count = float(self.settings.value("arena/right_scale", self.model.right_mm_per_count))
         self.model.track_width_mm = float(self.settings.value("arena/track", 300))
+        self.model.invert_left = self.settings.value("arena/invert_left", False, type=bool)
+        self.model.invert_right = self.settings.value("arena/invert_right", True, type=bool)
 
     def _build_specs(self):
         specs = []
@@ -703,6 +737,19 @@ class ArenaView(QWidget):
             return
         self._encoder_calibration_start = (left, right)
         self.encoder_cal_status.setText(f"Start L={left:.0f}, R={right:.0f}; roll forward, then calculate.")
+
+    def _apply_measured_encoder_runs(self):
+        self.left_scale.setValue(DEFAULT_LEFT_MM_PER_COUNT)
+        self.right_scale.setValue(DEFAULT_RIGHT_MM_PER_COUNT)
+        self.invert_left.setChecked(False)
+        self.invert_right.setChecked(True)
+        self._calibration_changed()
+        self.reset_map()
+        self.encoder_cal_status.setText(
+            "Applied both runs: L=0.08833, R=0.08609 mm/count; encoder 1 inverted. "
+            "These are provisional chassis-distance scales, not motor trim. "
+            "Verify wheel travel separately before trusting turning odometry."
+        )
 
     def _calculate_encoder_scale(self):
         if self._encoder_calibration_start is None:

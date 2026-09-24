@@ -68,9 +68,14 @@ A sensor that failed to initialise (or has nothing in range) is sent as JSON
 a current reading. Firmware-provided telemetry definitions supply the friendly
 name, group and unit shown in the live table.
 
-The dedicated **8×8 TOF** tab displays all 64 zones as a live colour map. Any
-zone can be selected and sent straight to the normal plotter. Every other
-numeric live value is also automatically available in the **Plots** tab.
+The dedicated **8×8 TOF** tab opens as a numbered raw 8×8 distance grid
+(millimetres). Missing returns appear as dashes, not as an invented distance.
+Use **View** to switch to a smoothed image or Group 7-inspired stable-detail
+filtering. These filters affect the visualisation only; the raw sensor values,
+CSV export and object detection are not rewritten. The sidebar offers an
+automatic colour range and orientation controls. Click a zone to inspect it,
+or double-click to send it to **Plots**. Every other numeric live value is
+also automatically available in the **Plots** tab.
 
 Commands (Commands tab / Dashboard):
 
@@ -101,6 +106,13 @@ and builds a local robot-centred map. It provides:
 - measured-distance encoder calibration: with the drive motors OFF, capture
   start counts, roll straight forward a measured distance, then calculate
   each wheel's mm/count and count polarity. Verify with a second run;
+- the **Use 2 measured runs** button applies the 1805/1830 mm test averages:
+  encoder 0 = 0.08833 mm/count, encoder 1 = 0.08609 mm/count with encoder 1
+  inverted for forward travel. These are also the defaults on a fresh install;
+  untouched legacy 0.095/0.095 settings are upgraded once, while custom saved
+  calibrations are preserved. These are provisional odometry scales, not a drive
+  motor correction; a drifting powered run cannot distinguish motor speed
+  imbalance from wheel-size or encoder-count differences;
 - manual walls, obstacle circles, weights and a goal, with an A* **preview**
   route inflated by robot radius and clearance;
 - three-frame top/bottom TOF depth-gap hints for possible weights;
@@ -134,13 +146,22 @@ Parameters (Parameters tab, live-tunable):
 The Dashboard has a dedicated **Keyboard Drive** panel. Enable Debug Mode,
 arm the panel, click the app window, then use **W/S** or **↑/↓** for
 forward/reverse and **A/D** or **←/→** to turn. Space or releasing every drive
-key sends neutral. The Teensy
+key sends neutral. **Left scale** and **Right scale** set each side as a
+percentage of the speed-limit slider during forward/reverse travel; e.g.
+100% left and 98% right gives 100/98 at full speed or 60/59 at 60% speed.
+Pure turns remain symmetric. The scales are saved locally in the app and
+never arm the motors on startup. The Teensy
 also makes both drive outputs neutral after 300 ms without a new command.
 
 The Dashboard's **Drum motors** panel tests two independent servo-style driver
-channels on D28 (left) and D29 (right). Set signed percentages and
-press-and-hold RUN; releasing the button sends neutral. The firmware caps
-commands at ±100%, starts neutral, and times out after 300 ms without commands.
+channels on D28 (left) and D29 (right). Set signed percentages and either
+press-and-hold RUN for a momentary test or toggle **Continuous RUN** to latch
+the selected speeds. The app refreshes a latched command every 100 ms; it
+stops on toggle-off, STOP, leaving Debug Mode, disconnection, stale telemetry,
+or app exit. Unlike momentary hold, it keeps running if you switch to another
+app while the robot link remains healthy. A lost app/link also trips the
+firmware's independent 300 ms timeout. The firmware caps commands at ±100%
+and starts neutral.
 This assumes the same 1050/1500/1950 µs interface as Group 7's DFR0513;
 confirm your actual driver and connector before plugging it in. D28/D29 are
 signal pins, not motor power. STOP and leaving Debug Mode neutralise both.

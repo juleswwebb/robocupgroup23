@@ -327,6 +327,7 @@ class RobotDebugGUI(QMainWindow):
         self.drive_command_available = False
         self.drum_command_available = False
         self.drum_held = False
+        self.drum_latched = False
         self.robot_debug_mode = False
 
         # Recording metadata / parameter snapshot support.
@@ -1050,6 +1051,23 @@ class RobotDebugGUI(QMainWindow):
         speed_row.addWidget(self.drive_speed_label)
         drive_layout.addLayout(speed_row)
 
+        trim_row = QHBoxLayout()
+        trim_row.addWidget(QLabel("Left scale"))
+        self.drive_left_scale = QSpinBox()
+        self.drive_left_scale.setRange(0, 100)
+        self.drive_left_scale.setSuffix(" %")
+        self.drive_left_scale.setValue(int(self.settings.value("drive/left_scale", 100)))
+        self.drive_left_scale.setToolTip("Left command as a percentage of the speed limit; 100% is untrimmed")
+        trim_row.addWidget(self.drive_left_scale)
+        trim_row.addWidget(QLabel("Right scale"))
+        self.drive_right_scale = QSpinBox()
+        self.drive_right_scale.setRange(0, 100)
+        self.drive_right_scale.setSuffix(" %")
+        self.drive_right_scale.setValue(int(self.settings.value("drive/right_scale", 100)))
+        self.drive_right_scale.setToolTip("Try 98% right with 100% left to test the measured left drift")
+        trim_row.addWidget(self.drive_right_scale)
+        drive_layout.addLayout(trim_row)
+
         self.drive_status_label = QLabel("DISARMED")
         self.drive_status_label.setObjectName("statusPill")
         theme.set_pill_state(self.drive_status_label, "")
@@ -1059,7 +1077,7 @@ class RobotDebugGUI(QMainWindow):
 
         drum_group = QGroupBox("Drum motors · D28 / D29")
         drum_layout = QVBoxLayout(drum_group)
-        drum_hint = QLabel("Servo-style motor driver only. Set each channel, then press and hold RUN; release to stop. Requires Debug Mode. Firmware stops after 300 ms without a fresh command.")
+        drum_hint = QLabel("Set each channel, then hold RUN for a momentary test or switch Continuous RUN on. Stop before leaving the app. Requires Debug Mode; firmware stops after 300 ms without a fresh command.")
         drum_hint.setWordWrap(True)
         drum_layout.addWidget(drum_hint)
         drum_row = QHBoxLayout()
@@ -1076,6 +1094,12 @@ class RobotDebugGUI(QMainWindow):
         self.drum_hold_button.pressed.connect(self._start_drum_hold)
         self.drum_hold_button.released.connect(self._stop_drum_hold)
         drum_layout.addWidget(self.drum_hold_button)
+        self.drum_latch_button = QPushButton("CONTINUOUS RUN · OFF")
+        self.drum_latch_button.setCheckable(True)
+        self.drum_latch_button.setObjectName("primaryButton")
+        self.drum_latch_button.setEnabled(False)
+        self.drum_latch_button.toggled.connect(self._set_drum_latched)
+        drum_layout.addWidget(self.drum_latch_button)
         self.drum_status_label = QLabel("WAITING FOR DRUM CONTROL")
         self.drum_status_label.setObjectName("statusPill")
         drum_layout.addWidget(self.drum_status_label)
@@ -1136,9 +1160,10 @@ class RobotDebugGUI(QMainWindow):
 
     def _update_drum_controls(self):
         available = self._drum_controls_available()
-        if not available and self.drum_held:
+        if not available and (self.drum_held or self.drum_latched):
             self._stop_drum_hold()
         self.drum_hold_button.setEnabled(available)
+        self.drum_latch_button.setEnabled(available)
         if not available:
             self.drum_status_label.setText("ENABLE DEBUG MODE / CONNECT DRUM CONTROL")
             theme.set_pill_state(self.drum_status_label, "")
@@ -1146,14 +1171,42 @@ class RobotDebugGUI(QMainWindow):
     def _start_drum_hold(self):
         if not self._drum_controls_available():
             return
+        if self.drum_latched:
+            self.drum_latched = False
+            self.drum_latch_button.blockSignals(True)
+            self.drum_latch_button.setChecked(False)
+            self.drum_latch_button.blockSignals(False)
+            self.drum_latch_button.setText("CONTINUOUS RUN · OFF")
         self.drum_held = True
         self._send_drum_command()
 
+    def _set_drum_latched(self, enabled: bool):
+        if enabled and not self._drum_controls_available():
+            self.drum_latch_button.blockSignals(True)
+            self.drum_latch_button.setChecked(False)
+            self.drum_latch_button.blockSignals(False)
+            return
+        if enabled:
+            self.drum_latched = True
+            self.drum_held = False
+            self.drum_latch_button.setText("STOP CONTINUOUS RUN")
+            self._send_drum_command()
+        else:
+            self._stop_drum_hold()
+
     def _send_drum_command(self):
-        if not self.drum_held:
+        if not (self.drum_held or self.drum_latched):
             return
         if not self._drum_controls_available():
             self._stop_drum_hold()
+            return
+        if self.drum_latched and (
+            self.last_telemetry_monotonic is None
+            or time.monotonic() - self.last_telemetry_monotonic > 2.0
+        ):
+            self._stop_drum_hold()
+            self.drum_status_label.setText("STOPPED · TELEMETRY LOST")
+            theme.set_pill_state(self.drum_status_label, "bad")
             return
         left, right = self.drum_left_spin.value(), self.drum_right_spin.value()
         self.bluetooth.send_command("drum_set", left=left, right=right)
@@ -1161,16 +1214,22 @@ class RobotDebugGUI(QMainWindow):
         theme.set_pill_state(self.drum_status_label, "busy")
 
     def _stop_drum_hold(self):
-        was_held = self.drum_held
+        was_running = self.drum_held or self.drum_latched
         self.drum_held = False
-        if was_held and self._drum_controls_available():
+        self.drum_latched = False
+        self.drum_latch_button.blockSignals(True)
+        self.drum_latch_button.setChecked(False)
+        self.drum_latch_button.blockSignals(False)
+        self.drum_latch_button.setText("CONTINUOUS RUN · OFF")
+        if was_running and self._drum_controls_available():
             self.bluetooth.send_command("drum_set", left=0, right=0)
         if self._drum_controls_available():
-            self.drum_status_label.setText("STOPPED · HOLD RUN TO TEST")
+            self.drum_status_label.setText("STOPPED · HOLD OR SWITCH RUN")
             theme.set_pill_state(self.drum_status_label, "ok")
 
     def focusOutEvent(self, event):
-        self._stop_drum_hold()
+        if self.drum_held:
+            self._stop_drum_hold()
         super().focusOutEvent(event)
 
     def _drive_controls_available(self) -> bool:
@@ -1184,6 +1243,8 @@ class RobotDebugGUI(QMainWindow):
         available = self._drive_controls_available()
         self.drive_arm_checkbox.setEnabled(available)
         self.drive_speed_slider.setEnabled(available)
+        self.drive_left_scale.setEnabled(available)
+        self.drive_right_scale.setEnabled(available)
 
         if not available:
             self._set_drive_armed(False)
@@ -1223,6 +1284,12 @@ class RobotDebugGUI(QMainWindow):
         if self._drive_controls_available():
             self.bluetooth.set_parameter("drive.max_percent", value)
 
+    def _on_drive_scale_changed(self):
+        self.settings.setValue("drive/left_scale", self.drive_left_scale.value())
+        self.settings.setValue("drive/right_scale", self.drive_right_scale.value())
+        if self.drive_keys and self.drive_arm_checkbox.isChecked():
+            self._send_keyboard_drive()
+
     def _keyboard_drive_values(self) -> tuple[int, int]:
         speed = self.drive_speed_slider.value()
         forward = Qt.Key.Key_W in self.drive_keys or Qt.Key.Key_Up in self.drive_keys
@@ -1231,15 +1298,21 @@ class RobotDebugGUI(QMainWindow):
         turn_left = Qt.Key.Key_A in self.drive_keys or Qt.Key.Key_Left in self.drive_keys
         linear = int(forward) - int(reverse)
         turn = int(turn_right) - int(turn_left)
-        return (
-            max(-speed, min(speed, (linear + turn) * speed)),
-            max(-speed, min(speed, (linear - turn) * speed)),
-        )
+        left = max(-speed, min(speed, (linear + turn) * speed))
+        right = max(-speed, min(speed, (linear - turn) * speed))
+        # Apply per-side calibration only while translating. Pure turns stay
+        # symmetric, so a straight-line trim does not add unwanted motion.
+        if linear:
+            left = round(left * self.drive_left_scale.value() / 100)
+            right = round(right * self.drive_right_scale.value() / 100)
+        return left, right
 
     def _send_keyboard_drive(self):
         if not self._drive_controls_available() or not self.drive_arm_checkbox.isChecked():
             return
         left, right = self._keyboard_drive_values()
+        if (left or right) and (self.drum_held or self.drum_latched):
+            self._stop_drum_hold()
         self.bluetooth.send_command("drive_set", left=left, right=right)
         if left == 0 and right == 0:
             self.drive_status_label.setText("ARMED — STOPPED")
@@ -1281,6 +1354,8 @@ class RobotDebugGUI(QMainWindow):
             if self.drive_keys:
                 self.drive_keys.clear()
                 self._send_drive_stop()
+            if self.drum_held:
+                self._stop_drum_hold()
         super().changeEvent(event)
 
     # =================================================================
@@ -1851,6 +1926,8 @@ class RobotDebugGUI(QMainWindow):
 
         self.drive_arm_checkbox.toggled.connect(self._on_drive_armed_changed)
         self.drive_speed_slider.valueChanged.connect(self._on_drive_speed_changed)
+        self.drive_left_scale.valueChanged.connect(lambda _value: self._on_drive_scale_changed())
+        self.drive_right_scale.valueChanged.connect(lambda _value: self._on_drive_scale_changed())
 
         self.refresh_definitions_button.clicked.connect(
             self.bluetooth.request_definitions
@@ -2308,7 +2385,7 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry[
             name
         ] = value
-        if self.drum_held and name in ("navigation.active", "drive.active") and value is True:
+        if (self.drum_held or self.drum_latched) and name in ("navigation.active", "drive.active") and value is True:
             self._stop_drum_hold()
 
         # ArenaView groups all signals sharing one robot timestamp into a
