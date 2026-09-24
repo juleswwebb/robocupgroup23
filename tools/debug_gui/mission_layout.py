@@ -25,6 +25,7 @@ class MissionLayout:
         self.margin_mm = 90.0
         self.weights = []  # {x, y, dummy}
         self.obstacles = []  # {kind, x, y, width, height, rotation}
+        self.live_obstacles = []  # temporary 8x8 detections, never saved
         self.route = []  # {x, y, target}
         self.error = ""
 
@@ -58,6 +59,9 @@ class MissionLayout:
                 x0, y0, x1, y1 = self.obstacle_rect(item)
                 if x0 - clearance <= x <= x1 + clearance and y0 - clearance <= y <= y1 + clearance:
                     return True
+        for item in self.live_obstacles:
+            if math.hypot(x - item["x"], y - item["y"]) <= item["radius"] + clearance:
+                return True
         for item in self.weights:
             if item["dummy"] and math.hypot(x - item["x"], y - item["y"]) <= 120 + clearance:
                 return True
@@ -187,6 +191,52 @@ class MissionLayout:
             self.error = "Route exceeds 64 waypoints; simplify the layout."
             self.route = []
             return False
+        return True
+
+    def replan_from(self, current, remaining_targets):
+        """Plan around live obstacles without moving the original map origin."""
+        if self.blocked(*current):
+            raise ValueError("Robot pose lies inside obstacle clearance")
+        route = []
+        source = current
+        for target in remaining_targets:
+            goal = (float(target["x"]), float(target["y"]))
+            if self.blocked(*goal):
+                raise ValueError("Remaining target is blocked by an obstacle")
+            segment = self._astar(source, goal)
+            if not segment or not self._segment_clear(source, segment[0]):
+                raise ValueError("No clear detour to remaining target")
+            route.extend({"x": x, "y": y, "target": False} for x, y in segment[1:])
+            if not route or (route[-1]["x"], route[-1]["y"]) != segment[-1]:
+                route.append({"x": segment[-1][0], "y": segment[-1][1], "target": bool(target.get("target"))})
+            else:
+                route[-1]["target"] = bool(target.get("target"))
+            source = segment[-1]
+        if not route or len(route) > self.MAX_WAYPOINTS:
+            raise ValueError("Detour is empty or exceeds 64 waypoints")
+        return route
+
+    def add_live_obstacles(self, points, *, radius=120):
+        """Merge nearby 8x8 hits; keep bounded, transient map evidence."""
+        added = 0
+        for x, y in points:
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            if any(math.hypot(x - item["x"], y - item["y"]) < 180
+                   for item in self.live_obstacles):
+                continue
+            self.live_obstacles.append({"x": x, "y": y, "radius": radius})
+            added += 1
+        self.live_obstacles = self.live_obstacles[-40:]
+        return added
+
+    def route_is_clear_from(self, current, route):
+        previous = current
+        for waypoint in route:
+            target = (waypoint["x"], waypoint["y"])
+            if not self._segment_clear(previous, target):
+                return False
+            previous = target
         return True
 
     def to_dict(self):

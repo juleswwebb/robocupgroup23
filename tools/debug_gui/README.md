@@ -141,17 +141,25 @@ start and arrow. The app must remain open and connected; it sends fresh
 commands every 100 ms while the Teensy's independent 300 ms drive watchdog
 remains active. Each moving wheel is commanded at 80–100% because this
 drivetrain stalls below 80%; route start requests and waits for confirmation
-of a 100% firmware drive limit. A healthy all-out-of-range 8×8 frame is clear
-space and permits movement; a failed/missing frame-health signal stops the
-route, so upload the matching firmware. The wider 800 mm forward obstacle stop,
-missing/stale telemetry, pose jumps,
+of a 100% firmware drive limit. Straight travel commands default to 85% left
+and 100% right; small heading corrections stay within the 80–100% moving
+range. A healthy all-out-of-range 8×8 frame is clear space and permits
+movement; a failed/missing frame-health signal stops the route, so upload the
+matching firmware. Central upper-zone 8×8 hits are projected into the Mission
+Planner arena using the 8×8 placement, angle and FOV configured in Arena View.
+Transient obstacles appear as red rings and are not saved with the map. If one
+blocks the remaining route, the app commands STOP, replans from the current
+encoder/IMU pose, then resumes only when a clear detour exists. A hit closer
+than 450 mm, no detour, repeated replans, missing/stale telemetry, pose jumps,
 excess path deviation, no progress, operator takeover, and STOP all halt the
-route. The follower does **not** collect weights, unload, upload the route to
-the Teensy, or replan around a new obstacle. Arena View's separate route remains
-preview-only. Because 80% is a high minimum output, begin hardware testing
-with the wheels raised and then in a clear, supervised area with an accessible
-STOP button;
-these are provisional odometry scales, not absolute arena localisation. Run
+route. The follower does **not** collect weights, unload, or upload the route
+to the Teensy. Arena View's separate route remains preview-only. Because
+80–100% is a high output and 8×8 obstacle points are approximate, begin
+hardware testing with the wheels raised and then in a clear, supervised area
+with an accessible STOP button. The placement/heading of the 8×8 must be
+checked against real objects before driving: nearby unmappable returns stop
+the route. These are provisional odometry scales, not absolute arena
+localisation. Run
 offline regressions with `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tools/debug_gui -p 'test_*.py'` from the repo root.
 
 Parameters (Parameters tab, live-tunable):

@@ -152,6 +152,13 @@ class MissionCanvas(QWidget):
             else:
                 x0, y0, x1, y1 = m.obstacle_rect(item)
                 p.drawRect(QRectF(self._point(x0, y0), self._point(x1, y1)))
+        # Red rings are transient 8x8 detections, separate from the manually
+        # placed orange obstacles and never saved as part of the arena layout.
+        for item in m.live_obstacles:
+            p.setPen(QPen(QColor("#ff5e57"), 3))
+            p.setBrush(QColor(255, 94, 87, 75))
+            p.drawEllipse(self._point(item["x"], item["y"]),
+                          item["radius"] * scale, item["radius"] * scale)
         for item in m.weights:
             p.setPen(QPen(QColor("#ffffff" if self.selected and self.selected[1] is item else "#bc85ef"), 2))
             p.setBrush(QColor("#7d8090" if item["dummy"] else "#bc85ef"))
@@ -261,11 +268,16 @@ class MissionPlannerView(QWidget):
         form.addRow(rotate)
         delete = QPushButton("Delete selected"); delete.clicked.connect(self.canvas.delete_selected)
         form.addRow(delete)
+        clear_live = QPushButton("Clear 8×8 obstacle marks")
+        clear_live.clicked.connect(self._clear_live_obstacles)
+        form.addRow(clear_live)
         body.addWidget(panel); root.addLayout(body, 1)
         self.status = QLabel("Plan a route, then FOLLOW to command the robot from this app. Marked start and heading must match the physical robot.")
         self.status.setWordWrap(True); root.addWidget(self.status)
         self.follow_status = QLabel("Route follower idle · robot stays stopped")
         self.follow_status.setWordWrap(True); root.addWidget(self.follow_status)
+        self.obstacle_status = QLabel("8×8 mapped obstacles: 0 · red rings on map")
+        root.addWidget(self.obstacle_status)
         self.live_status = QLabel("Live weight candidates: 0 (hollow pink; requires calibrated start and odometry)")
         root.addWidget(self.live_status)
         self._selection_changed()
@@ -343,6 +355,20 @@ class MissionPlannerView(QWidget):
         self.stop_button.setEnabled(active)
         self.canvas.active_waypoint = waypoint if active else None
         self.canvas.update()
+
+    def refresh_live_obstacles(self):
+        self.obstacle_status.setText(
+            f"8×8 mapped obstacles: {len(self.model.live_obstacles)} · red rings on map"
+        )
+        self.canvas.update()
+
+    def _clear_live_obstacles(self):
+        self.route_changed.emit()
+        self.model.live_obstacles.clear()
+        self.model.route = []
+        self.follow_button.setEnabled(False)
+        self.refresh_live_obstacles()
+        self.status.setText("Live obstacle marks cleared. Plan a new route before following.")
 
     def set_robot_pose(self, right_mm, forward_mm, heading_rad):
         theta = math.radians(self.model.heading_deg)

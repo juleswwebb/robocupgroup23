@@ -69,7 +69,10 @@ from tof_view import TofView
 from wiring import HardwareMap, WiringPanel
 from arena_view import ArenaView, number
 from mission_view import MissionPlannerView
-from route_follower import FRONT_STOP_MM, RouteFollower, prepare_route
+from route_follower import (
+    EMERGENCY_STOP_MM, MAP_REQUIRED_MM, RouteFollower, local_to_mission,
+    matrix_obstacle_points, prepare_route,
+)
 
 
 
@@ -335,6 +338,10 @@ class RobotDebugGUI(QMainWindow):
         self.route_started_at = None
         self.route_awaiting_pose = False
         self.route_awaiting_limit = False
+        self.route_last_obstacle_frame = None
+        self.route_pause_until = None
+        self.route_resume_after_frame = None
+        self.route_replans = 0
 
         # Recording metadata / parameter snapshot support.
         self.parameter_definitions = {}
@@ -1571,7 +1578,7 @@ class RobotDebugGUI(QMainWindow):
         # Same central/top field used by firmware navigation. Bottom rows
         # often see the floor or chassis and are not a forward collision ray.
         values = [number(frame.get(f"tof.array.r{row}c{col}"))
-                  for row in range(6) for col in range(2, 6)]
+                  for row in range(5) for col in range(2, 6)]
         valid = [value for value in values if value is not None and 0 < value < 4000]
         return min(valid) if valid else None
 
@@ -1596,9 +1603,13 @@ class RobotDebugGUI(QMainWindow):
             reason = "Need both encoders and a valid, gyro-calibrated IMU."
         if reason is None and frame.get("tof.array_frame_ok") is not True:
             reason = "No healthy 8×8 ToF frame. Upload the updated firmware if this signal is missing."
+        matrix_spec = next((spec for spec in self.arena_view.model.sensor_specs
+                            if spec.get("kind") == "matrix" and spec.get("enabled", True)), None)
+        if reason is None and matrix_spec is None:
+            reason = "Enable and position the 8×8 sensor in Arena View first."
         front_mm = self._route_front_range(frame)
-        if reason is None and front_mm is not None and front_mm < FRONT_STOP_MM:
-            reason = f"Forward obstacle is within {FRONT_STOP_MM} mm."
+        if reason is None and front_mm is not None and front_mm < EMERGENCY_STOP_MM:
+            reason = f"Forward obstacle is within {EMERGENCY_STOP_MM} mm."
         if reason is None:
             try:
                 points = prepare_route(self.mission_view.model)
@@ -1611,7 +1622,9 @@ class RobotDebugGUI(QMainWindow):
             self, "Start supervised route following?",
             "Confirm the physical robot is stationary at the marked start, aligned "
             "with the start arrow, and the arena is clear. Moving wheel commands "
-            "will be at least 80%; the drive limit will be set to 100%. "
+            "will be 85% left / 100% right when straight; the drive limit "
+            "will be set to 100%. An obstacle on the route pauses the robot "
+            "while the app tries a detour. "
             "The app must stay "
             "connected; STOP or loss of pose/8×8 frame health halts the motors. "
             "This follows waypoints only — it does not collect weights or unload.",
@@ -1626,6 +1639,12 @@ class RobotDebugGUI(QMainWindow):
         self.route_started_at = time.monotonic()
         self.route_awaiting_pose = True
         self.route_awaiting_limit = True
+        self.route_last_obstacle_frame = None
+        self.route_pause_until = None
+        self.route_resume_after_frame = None
+        self.route_replans = 0
+        self.mission_view.model.live_obstacles.clear()
+        self.mission_view.refresh_live_obstacles()
         self.route_follower = RouteFollower(points)
         self.drive_speed_slider.blockSignals(True)
         self.drive_speed_slider.setValue(100)
@@ -1643,6 +1662,8 @@ class RobotDebugGUI(QMainWindow):
         self.route_follower = None
         self.route_awaiting_pose = False
         self.route_awaiting_limit = False
+        self.route_pause_until = None
+        self.route_resume_after_frame = None
         self.route_started_at = None
         if send_stop and self.bluetooth.is_connected():
             self.bluetooth.send_command("stop")
@@ -1691,6 +1712,55 @@ class RobotDebugGUI(QMainWindow):
             self._stop_mission_route("8×8 ToF frame read failed or health signal missing")
             return
         model = self.arena_view.model
+        if self.route_pause_until is not None and now < self.route_pause_until:
+            return
+        if (self.route_resume_after_frame is not None
+                and self.route_last_frame_monotonic == self.route_resume_after_frame):
+            return  # do not resume on the same frame that caused the detour
+        self.route_pause_until = None
+        self.route_resume_after_frame = None
+        if self.route_last_obstacle_frame != self.route_last_frame_monotonic:
+            self.route_last_obstacle_frame = self.route_last_frame_monotonic
+            layout = self.mission_view.model
+            points = matrix_obstacle_points(frame, model, layout)
+            front_mm = self._route_front_range(frame)
+            if front_mm is not None and front_mm < MAP_REQUIRED_MM and not points:
+                self._stop_mission_route("Nearby 8×8 return could not be located on the map")
+                return
+            if layout.add_live_obstacles(points):
+                self.mission_view.refresh_live_obstacles()
+            current = local_to_mission(layout.start, layout.heading_deg, (model.x, model.y))
+            remaining = layout.route[follower.index:]
+            if not layout.route_is_clear_from(current, remaining):
+                # Stop BEFORE running A*: even a slow plan or Bluetooth delay
+                # must never leave the previous motion command active.
+                self.bluetooth.send_command("stop")
+                self.recorder.record_command("stop", {})
+                if self.route_replans >= 4:
+                    self._stop_mission_route("More than four obstacle replans")
+                    return
+                targets = [item for item in remaining if item.get("target")]
+                if remaining and (not targets or targets[-1] is not remaining[-1]):
+                    targets.append(remaining[-1])
+                try:
+                    new_route = layout.replan_from(current, targets)
+                    layout.route = new_route
+                    new_points = prepare_route(layout, current_local=(model.x, model.y),
+                                               current_mission=current)
+                except (ValueError, KeyError, TypeError) as exc:
+                    self._stop_mission_route(f"No safe detour: {exc}")
+                    return
+                self.route_replans += 1
+                self.route_follower = RouteFollower(new_points, start_pose=(model.x, model.y))
+                self.route_pause_until = now + 0.5
+                self.route_resume_after_frame = self.route_last_frame_monotonic
+                self.mission_view.canvas.update()
+                self.mission_view.set_follow_status(
+                    f"Replanned around 8×8 obstacle ({self.route_replans}/4)",
+                    active=True, waypoint=0,
+                )
+                self.add_log("INFO", f"Route detour {self.route_replans}: {len(new_route)} waypoints")
+                return
         decision = follower.step(model.x, model.y, model.theta,
                                  self._route_front_range(frame), now)
         self.mission_view.set_robot_pose(model.x, model.y, model.theta)

@@ -17,7 +17,8 @@ MAX_CROSSTRACK_MM = 250.0
 MAX_ROUTE_MM = 14000.0
 MAX_SEGMENT_MM = 2500.0
 MIN_MOVING_PERCENT = 80
-FRONT_STOP_MM = 800
+EMERGENCY_STOP_MM = 450
+MAP_REQUIRED_MM = 800
 
 
 def mission_to_local(start, heading_deg, point):
@@ -28,15 +29,52 @@ def mission_to_local(start, heading_deg, point):
             dx * math.cos(angle) + dy * math.sin(angle))
 
 
-def prepare_route(layout):
+def local_to_mission(start, heading_deg, point):
+    """Robot right/forward -> mission-map x/y."""
+    angle = math.radians(heading_deg)
+    right, forward = point
+    return (start[0] + forward * math.cos(angle) - right * math.sin(angle),
+            start[1] + forward * math.sin(angle) + right * math.cos(angle))
+
+
+def matrix_obstacle_points(frame, arena_model, layout):
+    """Project central 8x8 columns into mission coordinates (millimetres)."""
+    spec = next((item for item in arena_model.sensor_specs
+                 if item.get("kind") == "matrix" and item.get("enabled", True)), None)
+    if spec is None:
+        return []
+    side = -1 if arena_model.matrix_mirrored else 1
+    points = []
+    for col in range(2, 6):
+        # The bottom rows commonly see the floor/chassis, not a forward hazard.
+        values = [frame.get(f"tof.array.r{row}c{col}") for row in range(5)]
+        ranges = sorted(float(v) for v in values
+                        if isinstance(v, (int, float)) and not isinstance(v, bool)
+                        and math.isfinite(v) and 0 < v < 2000)
+        if not ranges:
+            continue
+        distance = ranges[len(ranges) // 2]
+        column_angle = float(spec.get("angle", 0)) + side * (3.5 - col) * arena_model.matrix_fov_deg / 8
+        ox, oy, ray_angle = arena_model._origin_and_angle(spec, column_angle)
+        local_point = (ox + distance * math.cos(ray_angle),
+                       oy + distance * math.sin(ray_angle))
+        mission_point = local_to_mission(layout.start, layout.heading_deg, local_point)
+        if (0 <= mission_point[0] <= layout.WIDTH_MM
+                and 0 <= mission_point[1] <= layout.HEIGHT_MM):
+            points.append(mission_point)
+    return points
+
+
+def prepare_route(layout, *, current_local=(0.0, 0.0), current_mission=None):
     """Validate a pre-planned route and convert it into local millimetres."""
     if not layout.route or len(layout.route) > MAX_WAYPOINTS:
         raise ValueError("Plan a route with 1–64 waypoints first")
-    if layout.blocked(*layout.start):
-        raise ValueError("Marked start is inside a blocked area")
+    checked_start = layout.start if current_mission is None else current_mission
+    if layout.blocked(*checked_start):
+        raise ValueError("Current route start is inside a blocked area")
     points = []
-    previous = (0.0, 0.0)
-    previous_mission = layout.start
+    previous = current_local
+    previous_mission = layout.start if current_mission is None else current_mission
     total = 0.0
     for waypoint in layout.route:
         x, y = float(waypoint["x"]), float(waypoint["y"])
@@ -83,17 +121,19 @@ class DriveDecision:
 
 
 class RouteFollower:
-    """One waypoint at a time; stops rather than replanning around surprises."""
+    """One waypoint at a time; the GUI owns obstacle mapping and replanning."""
 
-    def __init__(self, points, *, speed_percent=86, turn_percent=80):
+    def __init__(self, points, *, start_pose=(0.0, 0.0), turn_percent=80):
         if not points:
             raise ValueError("No waypoints")
         self.points = list(points)
         self.index = 0
-        # This drivetrain stalls below about 80%. Leave 6 percentage points
-        # for heading correction without dropping either moving wheel below 80.
-        self.speed = min(94, max(86, int(speed_percent)))
+        # Operator's measured straight-running trim. Steering nudges stay
+        # within the 80..100% range needed to keep both wheels moving.
+        self.left_speed = 85
+        self.right_speed = 100
         self.turn = min(100, max(MIN_MOVING_PERCENT, int(turn_percent)))
+        self.start_pose = start_pose
         self.last_pose = None
         self.last_theta = None
         self.last_progress_at = None
@@ -106,7 +146,7 @@ class RouteFollower:
         # usable range. Frame health is checked by the GUI before calling us.
         if front_mm is not None and not math.isfinite(front_mm):
             return DriveDecision(0, 0, "FAULT", "Invalid forward 8×8 range", fault=True)
-        if front_mm is not None and front_mm < FRONT_STOP_MM:
+        if front_mm is not None and front_mm < EMERGENCY_STOP_MM:
             return DriveDecision(0, 0, "FAULT", f"Obstacle at {front_mm:.0f} mm", fault=True)
         pose = (x, y)
         if self.last_pose is not None and math.dist(pose, self.last_pose) > 350:
@@ -128,7 +168,7 @@ class RouteFollower:
             return DriveDecision(0, 0, "COMPLETE", "Final waypoint reached", done=True)
 
         target = self.points[self.index]
-        start = (0.0, 0.0) if self.index == 0 else self.points[self.index - 1]
+        start = self.start_pose if self.index == 0 else self.points[self.index - 1]
         if _segment_distance(pose, start, target) > MAX_CROSSTRACK_MM:
             return DriveDecision(0, 0, "FAULT", "More than 250 mm off route", fault=True)
         distance = math.dist(pose, target)
@@ -145,5 +185,9 @@ class RouteFollower:
             # Positive mathematical angle = turn left = right wheel forward.
             sign = 1 if error_deg > 0 else -1
             return DriveDecision(-sign * self.turn, sign * self.turn, "TURNING", detail)
-        correction = max(-6, min(6, round(-error_deg * 0.5)))
-        return DriveDecision(self.speed + correction, self.speed - correction, "FORWARD", detail)
+        correction = max(-5, min(5, round(-error_deg * 0.5)))
+        return DriveDecision(
+            max(80, min(100, self.left_speed + correction)),
+            max(80, min(100, self.right_speed - correction)),
+            "FORWARD", detail,
+        )
