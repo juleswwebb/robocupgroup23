@@ -106,6 +106,14 @@ class RouteFollowerTests(unittest.TestCase):
         layout.add_live_obstacles([(825, 1350)])
         self.assertTrue(layout.route_is_clear_from(layout.start, layout.route))
 
+    def test_isolated_8x8_pixel_is_not_mapped_as_obstacle(self):
+        layout = MissionLayout()
+        arena = ArenaModel()
+        arena.sensor_specs = [{"kind": "matrix", "x": 0, "y": 0,
+                               "angle": 0, "enabled": True}]
+        self.assertEqual(matrix_obstacle_points({"tof.array.r2c3": 250}, arena, layout), [])
+        self.assertEqual(RobotDebugGUI._route_front_range({"tof.array.r2c3": 250}), 250)
+
     def test_blocked_goal_is_not_silently_skipped(self):
         layout = MissionLayout()
         layout.route = [{"x": 1600, "y": 325, "target": True}]
@@ -136,6 +144,26 @@ class RouteFollowerTests(unittest.TestCase):
         self.assertEqual(right.state, "TURNING")
         self.assertGreater(right.left, 0)
         self.assertLess(right.right, 0)
+
+    def test_reaches_target_site_search_stops_then_advances_without_false_pickup(self):
+        follower = RouteFollower([(0, 0), (140, -80), (140, 80), (0, 800)])
+        scan = follower.step(0, 0, math.pi / 2, None, 1,
+                             target_leg=True, search_waypoint=True)
+        self.assertEqual(scan.state, "SITE_SEARCH")
+        self.assertEqual((scan.left, scan.right), (0, 0))
+        self.assertEqual(follower.index, 0)
+        next_view = follower.step(0, 0, math.pi / 2, None, 1.1,
+                                  target_leg=True, search_waypoint=True)
+        self.assertFalse(next_view.fault)
+        self.assertFalse(next_view.done)
+        self.assertEqual(follower.index, 0)  # hold the view for the dwell
+        follower.step(0, 0, math.pi / 2, None, 1.9,
+                      target_leg=True, search_waypoint=True)
+        self.assertEqual(follower.index, 1)
+        move_to_view = follower.step(0, 0, math.pi / 2, None, 2.0,
+                                     target_leg=True, search_waypoint=True)
+        self.assertGreaterEqual(abs(move_to_view.left), 80)
+        self.assertGreaterEqual(abs(move_to_view.right), 80)
 
     def test_every_moving_wheel_is_at_least_80_percent(self):
         for heading_error in (-7, -4, 0, 4, 7, 20, -90):

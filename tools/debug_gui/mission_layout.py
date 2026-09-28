@@ -139,6 +139,58 @@ class MissionLayout:
             i = j
         return smooth
 
+    def _weight_site_route(self, current, item):
+        """Return a safe approach plus two short sensor-search stops."""
+        target = (float(item["x"]), float(item["y"]))
+        path_to_weight = self._astar(current, target)
+        if not path_to_weight or math.dist(path_to_weight[-1], target) > 80:
+            return None
+        if len(path_to_weight) > 1:
+            dx = target[0] - path_to_weight[-2][0]
+            dy = target[1] - path_to_weight[-2][1]
+        else:
+            dx, dy = target[0] - current[0], target[1] - current[1]
+        length = math.hypot(dx, dy)
+        ux, uy = (dx / length, dy / length) if length > 1 else (0.0, 1.0)
+
+        stage = None
+        stage_path = None
+        for retreat in (300.0, 240.0, 180.0):
+            candidate = (target[0] - ux * retreat, target[1] - uy * retreat)
+            if self.blocked(*candidate) or not self._segment_clear(candidate, target):
+                continue
+            candidate_path = self._astar(current, candidate)
+            if candidate_path:
+                stage, stage_path = candidate, candidate_path
+                break
+        if stage is None:
+            return None
+
+        # Group 7 makes a short lateral sweep around each target. Group 23's
+        # top/bottom VL53 pairs are angled inward, so these two poses let both
+        # pairs look across the marked site without driving through it.
+        lateral = (-uy, ux)
+        scan_points = []
+        for side in (-1.0, 1.0):
+            point = (stage[0] - ux * 80.0 + lateral[0] * side * 130.0,
+                     stage[1] - uy * 80.0 + lateral[1] * side * 130.0)
+            if (not self.blocked(*point) and self._segment_clear(stage, point)
+                    and all(math.dist(point, prior) > 60 for prior in scan_points)):
+                scan_points.append(point)
+        if not scan_points:
+            scan_points = [stage]
+
+        travel = stage_path[1:]
+        if not travel or math.dist(travel[-1], stage) > 1:
+            travel.append(stage)
+        # Tag the staging location and the two scan poses as target-site
+        # observations; ordinary A* corners remain untagged.
+        stops = [stage] + scan_points
+        for point in stops:
+            if math.dist(travel[-1], point) > 1:
+                travel.append(point)
+        return travel, target, stops
+
     def plan(self, return_home=False):
         self.route = []
         self.error = ""
@@ -154,29 +206,22 @@ class MissionLayout:
         while remaining:
             choices = []
             for item in remaining:
-                target = (item["x"], item["y"])
-                # A target can be approached only if a free centre point is
-                # within 80 mm; otherwise we'd falsely report it collected.
-                if self.blocked(*target):
-                    near = self._nearest_free(target)
-                    if near is None:
-                        continue
-                    target = (near[0]*self.GRID_MM, near[1]*self.GRID_MM)
-                    if math.dist(target, (item["x"], item["y"])) > 80:
-                        continue
-                path = self._astar(current, target)
-                if path:
-                    choices.append((sum(math.dist(a, b) for a, b in zip(path, path[1:])), item, path))
+                site = self._weight_site_route(current, item)
+                if site:
+                    path, target, stops = site
+                    cost = sum(math.dist(a, b) for a, b in zip([current] + path, path))
+                    choices.append((cost, item, path, target, stops))
             if not choices:
                 self.error = "A real weight is unreachable with the current clearance/map."
                 self.route = []
                 return False
-            _, item, path = min(choices, key=lambda choice: choice[0])
-            self.route.extend({"x": x, "y": y, "target": False} for x, y in path[1:])
-            if not self.route or (self.route[-1]["x"], self.route[-1]["y"]) != path[-1]:
-                self.route.append({"x": path[-1][0], "y": path[-1][1], "target": True})
-            else:
-                self.route[-1]["target"] = True
+            _, item, path, target, stops = min(choices, key=lambda choice: choice[0])
+            stop_points = {(round(x, 2), round(y, 2)) for x, y in stops}
+            for x, y in path:
+                site_stop = (round(x, 2), round(y, 2)) in stop_points
+                self.route.append({"x": x, "y": y, "target": site_stop,
+                                   "site_search": site_stop,
+                                   "target_x": target[0], "target_y": target[1]})
             current = path[-1]
             remaining.remove(item)
         if return_home:
@@ -206,11 +251,19 @@ class MissionLayout:
             segment = self._astar(source, goal)
             if not segment or not self._segment_clear(source, segment[0]):
                 raise ValueError("No clear detour to remaining target")
-            route.extend({"x": x, "y": y, "target": False} for x, y in segment[1:])
+            route.extend({"x": x, "y": y, "target": False} for x, y in segment[1:-1])
             if not route or (route[-1]["x"], route[-1]["y"]) != segment[-1]:
-                route.append({"x": segment[-1][0], "y": segment[-1][1], "target": bool(target.get("target"))})
+                endpoint = {"x": segment[-1][0], "y": segment[-1][1],
+                            "target": bool(target.get("target"))}
+                for key in ("site_search", "target_x", "target_y"):
+                    if key in target:
+                        endpoint[key] = target[key]
+                route.append(endpoint)
             else:
                 route[-1]["target"] = bool(target.get("target"))
+                for key in ("site_search", "target_x", "target_y"):
+                    if key in target:
+                        route[-1][key] = target[key]
             source = segment[-1]
         if not route or len(route) > self.MAX_WAYPOINTS:
             raise ValueError("Detour is empty or exceeds 64 waypoints")

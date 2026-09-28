@@ -24,10 +24,22 @@ class PlacementTests(unittest.TestCase):
         self.assertIsNone(warning)
         ArenaView._build_specs(holder)
         specs = {spec["key"]: spec for spec in holder.model.sensor_specs}
-        self.assertEqual(len(specs), 12)
+        point_count = sum(d.port.startswith("xshut") and d.kind in ("vl53l0x", "vl53l1x")
+                          for d in holder.hardware_map.devices)
+        active_ultrasonics = sum(holder.hardware_map.device_for_signal(f"ultrasonic.{n}") is not None
+                                 for n in (0, 1))
+        expected_count = point_count + active_ultrasonics
+        expected_count += holder.hardware_map.device_for_signal("tof.8x8") is not None
+        expected_count += holder.hardware_map.device_for_signal("inductive.detected") is not None
+        expected_count += holder.hardware_map.device_for_signal("flow.dx") is not None
+        self.assertEqual(len(specs), expected_count)
         self.assertEqual(specs["matrix"]["kind"], "matrix")
-        for key in ("ultrasonic0", "ultrasonic1", "flow", "inductive"):
+        for key in ("ultrasonic0", "ultrasonic1", "inductive"):
             self.assertIn(key, specs)
+        self.assertEqual(specs["xshut6"]["angle"], 45)
+        self.assertEqual(specs["xshut5"]["angle"], 45)
+        self.assertEqual(specs["xshut3"]["angle"], -45)
+        self.assertEqual(specs["xshut4"]["angle"], -45)
         self.assertEqual(specs["ultrasonic0"]["name"], "Ultrasonic_Right")
         self.assertEqual(specs["ultrasonic1"]["name"], "Ultrasonic_Left")
         self.assertEqual(specs["ultrasonic0"]["kind"], "ultrasonic")
@@ -35,6 +47,10 @@ class PlacementTests(unittest.TestCase):
         self.assertTrue(all("height_mm" in spec for spec in specs.values()))
         for key in ("ir0", "ir1", "ir2", "ir3", "colour", "imu", "encoder0", "encoder1"):
             self.assertNotIn(key, specs)
+        if holder.hardware_map.device_for_signal("flow.dx") is not None:
+            self.assertIn("flow", specs)
+        else:
+            self.assertNotIn("flow", specs)
 
         holder.settings.values["arena/sensors/ultrasonic0/height_mm"] = 275
         ultrasonic = holder.hardware_map.device_for_signal("ultrasonic.0")

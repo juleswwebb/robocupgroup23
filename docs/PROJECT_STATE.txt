@@ -1,5 +1,12 @@
 # Robocup Group 23 Project State
 
+2026-09-28 navigation addendum: See GROUP7_PORT_STATUS.txt for the current
+Group 7 comparison and the new guarded weight-targeting/obstacle integration.
+The older snapshot below is historical and does not describe all current
+testing-branch wiring or mission behavior; the wiring screen and
+include/sensor_config.h are authoritative for current pins. This addendum
+does not assert a new hardware validation.
+
 **Snapshot date:** 22 September 2026
 **Target:** Teensy 4.0 at 600 MHz using Arduino and PlatformIO  
 **Branch:** `main`  
@@ -454,20 +461,20 @@ ARENA VIEW AND NAVIGATION
   Operator-added walls, obstacle circles, weights and a goal are saved
   separately from live range points. `arena_planner.py` previews an A* route
   on a 100 mm grid, inflating known geometry by robot radius and margin.
-  This route is a desktop preview only; it is NOT sent to the firmware or used
-  to command motors, because local odometry and map origin are uncalibrated.
+  This simpler Arena View route is a preview; the separate Mission Planner
+  builds and follows its own route through placed weights after explicit
+  operator confirmation. The route runs in the desktop GUI, not firmware.
 - Paired top/bottom L1X readings (XSHUT6/5 left and XSHUT3/4 right)
-  can mark weight candidates after three frames with a >=150 mm depth gap.
-  These are map hints, not yet an autonomous pickup command.
-- Rechecked Group 7's `testing` branch (commit f7a6834): unlike the older
-  branch, it has a dedicated pre-laid arena MissionLayout, 4.9 x 2.4 m bounds,
-  green/blue home and opposite-home no-go, walls/ramps/tubes, real/dummy
-  weights, inflated A* routing, a 64-point waypoint cap, and a firmware
-  mission upload/execution protocol. Group 23 now has its own separate
-  Mission Planner tab implementing the editable layout and offline route
-  planning. It intentionally does NOT upload waypoints or automatically drive
-  them: Group 23 has not yet calibrated/validated the encoder scale, start
-  localisation, obstacle geometry or live route-following controller.
+  can identify a likely weight after three frames with a >=150 mm depth gap.
+  Placement and 45-degree inward aim are editable in Arena View; collection
+  and sorting are not automatic.
+- Rechecked Group 7's `testing` branch (commit f7a6834): it has a dedicated
+  pre-laid arena MissionLayout, 4.9 x 2.4 m bounds, green/blue home and
+  opposite-home no-go, walls/ramps/tubes, real/dummy weights, inflated A*
+  routing, a 64-point waypoint cap, firmware mission execution, live obstacle
+  handling, and a bounded multi-view search at each weight site. Group 23 has
+  an adapted desktop Mission Planner and supervised GUI route follower; it
+  does not use Group 7's firmware mission-upload protocol.
 - The Group 7 firmware is tightly coupled to its different pins, wheel drive,
   sensor layout and commands; it must not be copied into Group 23 wholesale.
   The existing Group 23 firmware navigation remains the conservative 8x8/IMU
@@ -487,8 +494,22 @@ ARENA VIEW AND NAVIGATION
   command. `drum_set` requires Debug Mode; STOP and Debug Mode exit neutralise
   both. Dashboard has a press-and-hold test button. Actual wiring, direction
   and driver type have NOT been verified on Group 23 hardware.
-- Autonomous weight collection remains unconnected to the drive controller.
-  Group 7's mission firmware assumes calibrated odometry/start pose, its own
-  sensor geometry and actuator sequence. Group 23 does not yet have those
-  measurements or a verified pickup/sorting state machine. The desktop
-  mission route and weight hints must not be treated as drive instructions.
+- Group 23's supervised Mission Planner route can drive the robot when the
+  operator explicitly starts FOLLOW. It requires Debug Mode, both encoder
+  readings, gyro-calibrated IMU, healthy 8x8 frames, live telemetry and the
+  firmware's confirmed 100% drive limit. The GUI replans around clustered 8x8
+  obstacles, stops on unsafe/stale data, and enforces a time/progress limit.
+- Each planned real-weight site now includes a safe staging point and two
+  lateral sensor-search views. The GUI uses the configured x/y/aim geometry
+  for the inward-facing XSHUT6/5 (left) and XSHUT3/4 (right) upper/lower pairs.
+  A candidate requires a bottom return at least 150 mm nearer than its paired
+  top return for three fresh frames, projected within 170 mm of the mapped
+  weight. Confirmed evidence can guide approach/centering; the route stops at
+  sensor alignment with pickup explicitly unverified. Drum actuation,
+  collection, sorting and unloading remain manual/not implemented.
+- This is not yet equivalent to Group 7's full onboard mission firmware:
+  route decisions run in the desktop app, so the connection must remain live.
+  Group 23's encoder scale, start pose, sensor angles and obstacle clearances
+  still need physical calibration. Validate with wheels raised and an operator
+  at STOP before any floor trial; successful offline tests are not hardware
+  validation.

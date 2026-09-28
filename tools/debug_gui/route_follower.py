@@ -51,9 +51,16 @@ def matrix_obstacle_points(frame, arena_model, layout):
         ranges = sorted(float(v) for v in values
                         if isinstance(v, (int, float)) and not isinstance(v, bool)
                         and math.isfinite(v) and 0 < v < 2000)
-        if not ranges:
+        # Group 7 treats a coherent cluster as a mapped obstacle; one
+        # isolated bad zone must not create a permanent detour. The separate
+        # front-range emergency gate still stops for any close single return.
+        if len(ranges) < 2:
             continue
-        distance = ranges[len(ranges) // 2]
+        cluster = max((tuple(value for value in ranges if abs(value - centre) <= 150)
+                       for centre in ranges), key=len)
+        if len(cluster) < 2:
+            continue
+        distance = cluster[len(cluster) // 2]
         column_angle = float(spec.get("angle", 0)) + side * (3.5 - col) * arena_model.matrix_fov_deg / 8
         ox, oy, ray_angle = arena_model._origin_and_angle(spec, column_angle)
         local_point = (ox + distance * math.cos(ray_angle),
@@ -138,15 +145,22 @@ class RouteFollower:
         self.last_theta = None
         self.last_progress_at = None
         self.best_distance = math.inf
+        self.target_align_since = None
+        self.target_aligned = False
+        self.site_scan_started_at = None
 
-    def step(self, x, y, theta, front_mm, now):
+    def step(self, x, y, theta, front_mm, now, *, weight=None, target_leg=False,
+             search_waypoint=False):
         if not all(math.isfinite(v) for v in (x, y, theta, now)):
             return DriveDecision(0, 0, "FAULT", "Invalid pose", fault=True)
         # None means this healthy frame has no target within the sensor's
         # usable range. Frame health is checked by the GUI before calling us.
         if front_mm is not None and not math.isfinite(front_mm):
             return DriveDecision(0, 0, "FAULT", "Invalid forward 8×8 range", fault=True)
-        if front_mm is not None and front_mm < EMERGENCY_STOP_MM:
+        # A low object at the mapped weight can be approached only after the
+        # independent upper/lower ToF pairs have confirmed it for three frames.
+        # The 150 mm hard stop is never waived by target classification.
+        if front_mm is not None and front_mm < (150 if weight and weight.front_is_target else EMERGENCY_STOP_MM):
             return DriveDecision(0, 0, "FAULT", f"Obstacle at {front_mm:.0f} mm", fault=True)
         pose = (x, y)
         if self.last_pose is not None and math.dist(pose, self.last_pose) > 350:
@@ -161,17 +175,80 @@ class RouteFollower:
             distance = math.dist(pose, target)
             if distance > WAYPOINT_TOLERANCE_MM:
                 break
+            if target_leg:
+                if weight is not None and weight.centered:
+                    return DriveDecision(0, 0, "TARGET_ALIGNED",
+                                         "Weight aligned by both lower ToFs; pickup unverified", done=True)
+                if search_waypoint and not (weight and weight.confirmed):
+                    if self.site_scan_started_at is None:
+                        self.site_scan_started_at = now
+                    if now - self.site_scan_started_at < 0.8:
+                        return DriveDecision(0, 0, "SITE_SEARCH",
+                                             "Holding this view for upper/lower ToF evidence")
+                    self.index += 1
+                    self.site_scan_started_at = None
+                    self.best_distance = math.inf
+                    self.last_progress_at = now
+                    self.target_align_since = None
+                    self.target_aligned = False
+                    return DriveDecision(0, 0, "SITE_SEARCH",
+                                         "Search stop reached; checking the next sensor view")
+                if weight and weight.confirmed:
+                    # The route marker is a safe staging/search pose. Once a
+                    # bottom/top pair confirms the mapped object, close the
+                    # remaining gap using the measured sensor geometry.
+                    target = weight.local_target
+                    distance = math.dist(pose, target)
+                    if distance > WAYPOINT_TOLERANCE_MM:
+                        break
+                return DriveDecision(0, 0, "FAULT",
+                                     "Mapped weight reached without sensor-confirmed centering; pickup unverified",
+                                     fault=True)
             self.index += 1
             self.best_distance = math.inf
             self.last_progress_at = now
+            self.target_align_since = None
+            self.target_aligned = False
         if self.index >= len(self.points):
             return DriveDecision(0, 0, "COMPLETE", "Final waypoint reached", done=True)
 
         target = self.points[self.index]
-        start = self.start_pose if self.index == 0 else self.points[self.index - 1]
+        if target_leg and weight is not None and weight.confirmed:
+            target = weight.local_target
+        # Once the configured side-ToF geometry confirms the marked weight,
+        # the short final approach is a fresh ray to that mapped target from
+        # the robot's current pose, not a continuation of the lateral scan
+        # leg. The target is still range-gated and the front hard-stop remains.
+        start = (pose if target_leg and weight is not None and weight.confirmed
+                 else self.start_pose if self.index == 0 else self.points[self.index - 1])
         if _segment_distance(pose, start, target) > MAX_CROSSTRACK_MM:
             return DriveDecision(0, 0, "FAULT", "More than 250 mm off route", fault=True)
         distance = math.dist(pose, target)
+        target_distance = (math.dist(pose, weight.local_target)
+                           if weight and weight.confirmed else math.inf)
+        if weight and weight.confirmed and target_leg and target_distance <= 350:
+            left, right = weight.left_mm, weight.right_mm
+            if left is not None and right is not None and left <= 200 and right <= 200:
+                if abs(left - right) > 30:
+                    if getattr(self, "centering_started_at", None) is None:
+                        self.centering_started_at = now
+                    if now - self.centering_started_at > 2.5:
+                        return DriveDecision(0, 0, "FAULT", "Weight centering timed out", fault=True)
+                    self.last_progress_at = now
+                    sign = 1 if left > right else -1
+                    # Short turns limit overshoot with Group 23's high-minimum
+                    # drive output; 100 ms app ticks keep the firmware watchdog alive.
+                    if (now - self.centering_started_at) % 0.3 < 0.1:
+                        return DriveDecision(-sign * self.turn, sign * self.turn,
+                                             "CENTERING", f"Left/right ToF gap {left-right:+.0f} mm")
+                    return DriveDecision(0, 0, "CENTERING", "Settling between turn pulses")
+                self.centering_started_at = None
+                return DriveDecision(0, 0, "TARGET_ALIGNED",
+                                     "Weight aligned by both lower ToFs; pickup unverified", done=True)
+            else:
+                self.centering_started_at = None
+        else:
+            self.centering_started_at = None
         if distance < self.best_distance - 15:
             self.best_distance = distance
             self.last_progress_at = now
@@ -181,6 +258,26 @@ class RouteFollower:
         desired = math.atan2(target[1] - y, target[0] - x)
         error_deg = math.degrees(_wrap_radians(desired - theta))
         detail = f"Waypoint {self.index + 1}/{len(self.points)} · {distance:.0f} mm · heading error {error_deg:+.0f}°"
+        if target_leg and distance <= 700:
+            tolerance = 7 if self.target_aligned else 4
+            if abs(error_deg) > tolerance:
+                self.target_aligned = False
+                self.target_align_since = None
+                self.last_progress_at = now
+                sign = 1 if error_deg > 0 else -1
+                # Full turns for large errors; pulse high-enough motor output
+                # for small errors so the drivetrain does not stall or coast.
+                if abs(error_deg) > 35 or now % 0.32 < 0.08:
+                    return DriveDecision(-sign * self.turn, sign * self.turn,
+                                         "TARGET_ALIGN", detail)
+                return DriveDecision(0, 0, "TARGET_ALIGN", "Settling between heading pulses")
+            if not self.target_aligned:
+                if self.target_align_since is None:
+                    self.target_align_since = now
+                self.last_progress_at = now
+                if now - self.target_align_since < 0.25:
+                    return DriveDecision(0, 0, "TARGET_SETTLE", detail)
+                self.target_aligned = True
         if abs(error_deg) > 8:
             # Positive mathematical angle = turn left = right wheel forward.
             sign = 1 if error_deg > 0 else -1

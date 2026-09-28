@@ -1,0 +1,88 @@
+Group 7 -> Group 23 navigation/functionality port audit
+Snapshot: 2026-09-27
+Group 7 source: ../group7robocup, testing @ f7a6834 (read-only)
+Group 23 destination: this repository, testing @ 8f50f88 before these edits
+
+The projects do not have interchangeable hardware. Group 7 uses a 203 DC
+motor driver with different pins/directions, four upper/lower point-ToF
+pairs, and additional smart-servo sorting hardware. Group 23 has a D7/D8
+servo-style main drive, two upper/lower pairs (XSHUT6/5 left and XSHUT3/4
+right), an SX1509 XSHUT expander, two ultrasonics on D30-D33, and its own
+encoder signs/scales. Algorithms must be adapted; source files and pin maps
+must not simply be copied.
+
+Audited Group 7 components:
+- PlatformIO/lib/BluetoothDebugWorkflow: USB/Bluetooth JSON workflow,
+  navigation strategies, obstacle decisions, map-uploaded missions, weight
+  evidence and centering, pose recovery, heading control.
+- PlatformIO/lib/FrontierExplorer: occupancy evidence, free-space rays,
+  inflated obstacles and nearest-frontier search.
+- PlatformIO/lib/{Tof,Tof8x8,Bno055Imu,DualEncoder,UltrasoundSensor}:
+  hardware telemetry and pose inputs. Its ultrasound uses echo interrupts;
+  Group 23 already does this non-blockingly in src/sensors/UltrasonicSensor.cpp.
+- PlatformIO/lib/{DcMotor203,Hx12kServo,HerkulexTeensy,Ir,DigitalInputSensor}:
+  Group 7 actuator and auxiliary hardware wrappers; these are not pin- or
+  device-compatible with Group 23.
+- Non-Teensy-Files/BluetoothDebugGUI/ArenaView.py: sensor placement,
+  wall/free-space tracking, planned-feature map, 8x8 view and mission UI.
+- Non-Teensy-Files/BluetoothDebugGUI/{DebugGUI,BluetoothSerial,DataRecorder,
+  WiringGuide}: telemetry, commands, recording, wiring and drive UI.
+
+Existing Group 23 equivalents before this port:
+- src/DriveControl.cpp and DebugGUI keyboard drive: firmware watchdog,
+  manual control and correct Group 23 motor polarity. Keep these outputs.
+- tools/debug_gui/{arena_view,mission_layout,mission_view,route_follower}.py:
+  sensor geometry, encoder/IMU pose, static weight route, A* detours,
+  live 8x8 obstacles and supervised waypoint driving.
+- BluetoothSerial.py, DebugProtocol.cpp, DataRecorder.py and wiring.py:
+  Group 23 USB/Bluetooth protocol, recording and wiring UI.
+- Group 23's 8x8 image processing and ultrasound interrupt capture already
+  implement the corresponding Group 7 concepts.
+
+Adapted in this change:
+- tools/debug_gui/weight_targeting.py adds Group 7-style three-frame
+  upper/lower height-gap evidence, projects the lower sensor returns from
+  the user-configured sensor locations, and requires agreement within
+  170 mm of the CURRENT mapped weight. It uses Group 23's two pairs, not
+  Group 7's four-pair mask.
+- Mission following distinguishes a confirmed mapped weight from an
+  unrelated 8x8 obstacle. Unmatched returns still use 450 mm stop and A*
+  detours. A target return is never allowed below 150 mm. Two agreeing 8x8
+  zones are required to PUT an obstacle on the map, but even a lone close
+  return still triggers the front stop; it is not ignored for safety.
+- Ambiguous returns near a planned weight immediately stop the motors while
+  up to three fresh frames are checked. A timed-out or unconfirmed object
+  goes back through ordinary obstacle handling.
+- The two lower ToFs can guide bounded, pulsed alignment. The route stops
+  once both see a <=200 mm object within 30 mm of each other. A 2.5 s
+  centering timeout stops rather than searching indefinitely.
+- The final mapped-weight leg uses Group 7's tighter heading tolerance
+  (4 degrees initially, 7 degrees after alignment), 250 ms settle, and
+  pulsed high-enough turns; Group 23's D7/D8 drive polarity and 85/100
+  straight trim remain authoritative.
+- A target reached by odometry alone is no longer claimed as collected.
+  Alignment ends with "pickup unverified"; no drum or sorter actuation.
+
+NOT yet ported / not safe to claim:
+- Group 7's autonomous on-Teensy mission upload and execution, frontier
+  exploration, wall-following/search patterns and side-ultrasound landmark
+  correction. Group 23 still relies on its supervised desktop route follower.
+- Group 7's motor driver code, reverse-polarity tuning, smart-servo sorting,
+  and four-pair target bearing cannot apply to Group 23 as written.
+- Driving through a weight, detecting a physical pickup, unloading, and
+  continuing to the next weight. These need confirmed bumper/drum geometry,
+  pickup feedback and controlled physical tests before enabling.
+- Precise localisation: the Group 7 logs themselves report drift on long
+  runs. Group 23's encoder scales and arena start pose still need testing.
+- Physical validation of this new target alignment. Offline tests pass,
+  but the robot's connection, geometry and braking distance must be checked
+  on the arena floor. Do not assume a compiled program implies safe motion.
+
+Operational safety: normal route start still requires fresh 8x8, both
+encoders, gyro-calibrated IMU, Debug Mode and 100% firmware drive limit.
+The existing 300 ms firmware drive-command watchdog and STOP remain active.
+Before a physical trial, confirm in Arena View that XSHUT6 is above XSHUT5
+on the left and XSHUT3 is above XSHUT4 on the right, and set each range
+sensor's actual x/y/height/angle. Bench-test with wheels lifted, then use
+a clear floor and an operator at STOP. The UI now stops on target alignment;
+it does not automatically resume the rest of a multi-weight route.

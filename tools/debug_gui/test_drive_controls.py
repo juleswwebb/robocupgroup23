@@ -56,6 +56,25 @@ class DriveControlTests(unittest.TestCase):
         self.assertEqual(stopped, [True])
         self.assertEqual(len(sent), 1)
 
+    def test_keyboard_drive_does_not_cancel_continuous_drum(self):
+        sent = []
+        drum_stopped = []
+        gui = SimpleNamespace(
+            _drive_controls_available=lambda: True,
+            drive_arm_checkbox=SimpleNamespace(isChecked=lambda: True),
+            _keyboard_drive_values=lambda: (85, 100),
+            route_follower=None,
+            drum_held=False,
+            drum_latched=True,
+            _stop_drum_hold=lambda: drum_stopped.append(True),
+            bluetooth=SimpleNamespace(send_command=lambda *a, **k: sent.append((a, k))),
+            drive_status_label=SimpleNamespace(setText=lambda _text: None),
+        )
+        with patch("DebugGUI.theme.set_pill_state"):
+            RobotDebugGUI._send_keyboard_drive(gui)
+        self.assertEqual(sent, [(("drive_set",), {"left": 85, "right": 100})])
+        self.assertEqual(drum_stopped, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -640,11 +640,6 @@ static void handle_command(JsonDocument& doc) {
         }
         const int left = doc["left"] | 0;
         const int right = doc["right"] | 0;
-        if ((left || right) && (navigation_is_active() || drive_control_is_active())) {
-            drum_control_stop();
-            send_error("Stop navigation/drive before testing drums");
-            return;
-        }
         drum_control_set_percent(left, right);
 
     } else if (strcmp(command, "navigation_set") == 0) {
@@ -653,7 +648,6 @@ static void handle_command(JsonDocument& doc) {
             send_error("navigation_set requires debug mode");
             return;
         }
-        if (enabled) drum_control_stop();
         if (!navigation_set_enabled(enabled)) {
             send_error(navigation_get_stop_reason());
         } else {

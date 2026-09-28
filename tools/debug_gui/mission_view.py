@@ -172,7 +172,13 @@ class MissionCanvas(QWidget):
             for waypoint in m.route:
                 after = self._point(waypoint["x"], waypoint["y"])
                 p.drawLine(before, after)
-                if waypoint["target"]: p.drawEllipse(after, 5, 5)
+                if waypoint.get("site_search"):
+                    p.setPen(QPen(QColor("#ea77dc"), 2))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawEllipse(after, 7, 7)
+                    p.setPen(QPen(QColor("#4dd6df"), 3))
+                elif waypoint["target"]:
+                    p.drawEllipse(after, 5, 5)
                 before = after
         if self.active_waypoint is not None and 0 <= self.active_waypoint < len(m.route):
             target = m.route[self.active_waypoint]

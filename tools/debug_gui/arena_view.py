@@ -611,7 +611,16 @@ class ArenaView(QWidget):
             lower = device.name.lower()
             x_default = -90 if "left" in lower else (90 if "right" in lower else 0)
             y_default = 140 if "front" in lower or "top" in lower else 0
-            angle_default = -45 if device.port == "xshut0" else (45 if device.port == "xshut1" else 0)
+            # The four front side sensors are aimed inward at 45 degrees:
+            # left-side beams rotate toward the robot's right, right-side
+            # beams toward its left. Their persisted GUI calibration remains
+            # authoritative when the operator has already set an angle.
+            if device.port in ("xshut6", "xshut5"):
+                angle_default = 45
+            elif device.port in ("xshut3", "xshut4"):
+                angle_default = -45
+            else:
+                angle_default = -45 if device.port == "xshut0" else (45 if device.port == "xshut1" else 0)
             key = device.port
             specs.append(self._placement_spec(key, device.name, signal, "point",
                                               x_default, y_default, angle_default,

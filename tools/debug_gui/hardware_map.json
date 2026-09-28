@@ -17,11 +17,6 @@
       "port": "xshut1"
     },
     {
-      "name": "NOT IN USE",
-      "kind": "vl53l1x",
-      "port": "xshut2"
-    },
-    {
       "name": "Front_Top_Right",
       "kind": "vl53l1x",
       "port": "xshut3"
@@ -80,11 +75,6 @@
       "name": "IMU",
       "kind": "imu",
       "port": "wire1_0x28"
-    },
-    {
-      "name": "Optical flow",
-      "kind": "optical_flow",
-      "port": "spi_cs10"
     },
     {
       "name": "Inductive sensor",

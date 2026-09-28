@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import sys
 import time
 import subprocess
@@ -71,8 +72,9 @@ from arena_view import ArenaView, number
 from mission_view import MissionPlannerView
 from route_follower import (
     EMERGENCY_STOP_MM, MAP_REQUIRED_MM, RouteFollower, local_to_mission,
-    matrix_obstacle_points, prepare_route,
+    matrix_obstacle_points, mission_to_local, prepare_route,
 )
+from weight_targeting import WeightTracker
 
 
 
@@ -1093,14 +1095,14 @@ class RobotDebugGUI(QMainWindow):
 
         drum_group = QGroupBox("Drum motors · D28 / D29")
         drum_layout = QVBoxLayout(drum_group)
-        drum_hint = QLabel("Set each channel, then hold RUN for a momentary test or switch Continuous RUN on. Stop before leaving the app. Requires Debug Mode; firmware stops after 300 ms without a fresh command.")
+        drum_hint = QLabel("Drums can run alongside robot movement. Set each channel, then hold RUN for a momentary test or switch Continuous RUN on. Requires Debug Mode; firmware stops after 300 ms without a fresh command, and STOP / disconnect always stops the drums.")
         drum_hint.setWordWrap(True)
         drum_layout.addWidget(drum_hint)
         drum_row = QHBoxLayout()
         self.drum_left_spin = QSpinBox(); self.drum_left_spin.setRange(-100, 100)
-        self.drum_left_spin.setValue(15); self.drum_left_spin.setSuffix(" %")
+        self.drum_left_spin.setValue(100); self.drum_left_spin.setSuffix(" %")
         self.drum_right_spin = QSpinBox(); self.drum_right_spin.setRange(-100, 100)
-        self.drum_right_spin.setValue(15); self.drum_right_spin.setSuffix(" %")
+        self.drum_right_spin.setValue(100); self.drum_right_spin.setSuffix(" %")
         drum_row.addWidget(QLabel("Left")); drum_row.addWidget(self.drum_left_spin)
         drum_row.addWidget(QLabel("Right")); drum_row.addWidget(self.drum_right_spin)
         drum_layout.addLayout(drum_row)
@@ -1333,8 +1335,6 @@ class RobotDebugGUI(QMainWindow):
         left, right = self._keyboard_drive_values()
         if (left or right) and self.route_follower is not None:
             self._stop_mission_route("Manual keyboard drive")
-        if (left or right) and (self.drum_held or self.drum_latched):
-            self._stop_drum_hold()
         self.bluetooth.send_command("drive_set", left=left, right=right)
         if left == 0 and right == 0:
             self.drive_status_label.setText("ARMED — STOPPED")
@@ -1588,10 +1588,10 @@ class RobotDebugGUI(QMainWindow):
         reason = None
         if not self._drive_controls_available():
             reason = "Connect the robot, enter Debug Mode, and wait for drive control."
-        elif self.drive_arm_checkbox.isChecked() or self.drum_held or self.drum_latched:
-            reason = "Disarm manual drive and stop the drums first."
-        elif self.telemetry.get("navigation.active") or self.telemetry.get("drive.active") or self.telemetry.get("drum.active"):
-            reason = "Stop existing motor activity before starting the route."
+        elif self.drive_arm_checkbox.isChecked():
+            reason = "Disarm manual keyboard drive first. Drum operation may continue during the route."
+        elif self.telemetry.get("navigation.active") or self.telemetry.get("drive.active"):
+            reason = "Stop existing drive/navigation activity before starting the route."
         elif (self.route_last_frame_monotonic is None
               or time.monotonic() - self.route_last_frame_monotonic > 1.25):
             reason = "No fresh complete robot telemetry frame."
@@ -1623,11 +1623,15 @@ class RobotDebugGUI(QMainWindow):
             "Confirm the physical robot is stationary at the marked start, aligned "
             "with the start arrow, and the arena is clear. Moving wheel commands "
             "will be 85% left / 100% right when straight; the drive limit "
-            "will be set to 100%. An obstacle on the route pauses the robot "
+            "will be set to 100%. Any latched drum command will continue while "
+            "the robot moves. An obstacle on the route pauses the robot "
             "while the app tries a detour. "
             "The app must stay "
             "connected; STOP or loss of pose/8×8 frame health halts the motors. "
-            "This follows waypoints only — it does not collect weights or unload.",
+            "Mapped weight returns can be approached only when both ToF heights "
+            "confirm the target for three frames. The robot may align its two "
+            "lower ToFs, but pickup and unloading are NOT verified or automatic. "
+            "Keep a clear stop zone around the robot.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
@@ -1643,9 +1647,11 @@ class RobotDebugGUI(QMainWindow):
         self.route_pause_until = None
         self.route_resume_after_frame = None
         self.route_replans = 0
+        self.route_weight_candidate_count = 0
         self.mission_view.model.live_obstacles.clear()
         self.mission_view.refresh_live_obstacles()
         self.route_follower = RouteFollower(points)
+        self.route_weight_tracker = WeightTracker()
         self.drive_speed_slider.blockSignals(True)
         self.drive_speed_slider.setValue(100)
         self.drive_speed_slider.blockSignals(False)
@@ -1660,6 +1666,7 @@ class RobotDebugGUI(QMainWindow):
         if self.route_follower is None:
             return
         self.route_follower = None
+        self.route_weight_tracker = None
         self.route_awaiting_pose = False
         self.route_awaiting_limit = False
         self.route_pause_until = None
@@ -1712,6 +1719,53 @@ class RobotDebugGUI(QMainWindow):
             self._stop_mission_route("8×8 ToF frame read failed or health signal missing")
             return
         model = self.arena_view.model
+        layout = getattr(self.mission_view, "model", None)
+        front_mm = self._route_front_range(frame)
+        weight = None
+        target_leg = False
+        search_waypoint = False
+        tracker = getattr(self, "route_weight_tracker", None)
+        if tracker is not None and layout is not None and follower.index < len(layout.route):
+            goal = layout.route[follower.index]
+            if goal.get("target"):
+                target_leg = True
+                target = (float(goal.get("target_x", goal["x"])),
+                          float(goal.get("target_y", goal["y"])))
+                search_waypoint = bool(goal.get("site_search"))
+                weight = tracker.observe(frame, model, layout, target, front_mm,
+                                         self.route_last_frame_monotonic)
+        # ArenaView continuously looks for the bottom-near/top-far signature,
+        # including between planned sites. If a new candidate appears while
+        # transiting, stop for review rather than driving past an unplanned
+        # object. At a planned site it must also agree with that mapped target.
+        candidates = getattr(model, "detected_weights", [])
+        seen_candidates = getattr(self, "route_weight_candidate_count", 0)
+        if len(candidates) > seen_candidates:
+            self.route_weight_candidate_count = len(candidates)
+            candidate = candidates[-1]
+            if target_leg:
+                planned_local = mission_to_local(
+                    layout.start, layout.heading_deg,
+                    (float(goal.get("target_x", goal["x"])),
+                     float(goal.get("target_y", goal["y"]))))
+                if math.dist(candidate, planned_local) > 250:
+                    self._stop_mission_route(
+                        "Unmapped weight-like object detected; stopped for review")
+                    return
+            else:
+                self._stop_mission_route(
+                    "Weight-like object detected between planned sites; stopped for review")
+                return
+        if weight is not None and weight.pending and front_mm is not None and front_mm < MAP_REQUIRED_MM:
+            # Stop before collecting more evidence. Never leave the previous
+            # motor command running while a close target is ambiguous.
+            self.bluetooth.send_command("stop")
+            self.recorder.record_command("stop", {})
+            self.mission_view.set_follow_status(
+                "Verifying mapped weight with upper/lower ToFs…",
+                active=True, waypoint=follower.index,
+            )
+            return
         if self.route_pause_until is not None and now < self.route_pause_until:
             return
         if (self.route_resume_after_frame is not None
@@ -1721,12 +1775,18 @@ class RobotDebugGUI(QMainWindow):
         self.route_resume_after_frame = None
         if self.route_last_obstacle_frame != self.route_last_frame_monotonic:
             self.route_last_obstacle_frame = self.route_last_frame_monotonic
-            layout = self.mission_view.model
             points = matrix_obstacle_points(frame, model, layout)
-            front_mm = self._route_front_range(frame)
+            if weight is not None and weight.front_is_target:
+                # The intended weight is not a wall: do not turn its own 8×8
+                # return into an obstacle. Unmatched returns remain hazards.
+                points = [point for point in points
+                          if math.dist(point, weight.target) > 170]
+                layout.live_obstacles = [item for item in layout.live_obstacles
+                                         if math.dist((item["x"], item["y"]), weight.target) > 170]
             if front_mm is not None and front_mm < MAP_REQUIRED_MM and not points:
-                self._stop_mission_route("Nearby 8×8 return could not be located on the map")
-                return
+                if weight is None or not weight.front_is_target:
+                    self._stop_mission_route("Nearby 8×8 return could not be located on the map")
+                    return
             if layout.add_live_obstacles(points):
                 self.mission_view.refresh_live_obstacles()
             current = local_to_mission(layout.start, layout.heading_deg, (model.x, model.y))
@@ -1761,8 +1821,9 @@ class RobotDebugGUI(QMainWindow):
                 )
                 self.add_log("INFO", f"Route detour {self.route_replans}: {len(new_route)} waypoints")
                 return
-        decision = follower.step(model.x, model.y, model.theta,
-                                 self._route_front_range(frame), now)
+        decision = follower.step(model.x, model.y, model.theta, front_mm, now,
+                                 weight=weight, target_leg=target_leg,
+                                 search_waypoint=search_waypoint)
         self.mission_view.set_robot_pose(model.x, model.y, model.theta)
         if decision.done or decision.fault:
             self._stop_mission_route(decision.detail)
@@ -2616,9 +2677,6 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry[
             name
         ] = value
-        if (self.drum_held or self.drum_latched) and name in ("navigation.active", "drive.active") and value is True:
-            self._stop_drum_hold()
-
         # ArenaView groups all signals sharing one robot timestamp into a
         # coherent pose/range frame. Feed it before matrix zones are hidden
         # from the large dashboard table below.
