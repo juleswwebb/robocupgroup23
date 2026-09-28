@@ -15,18 +15,17 @@
 #include <Wire.h>
 #include <SparkFunSX1509.h>
 
-// All 7 VL53 XSHUT lines are wired through this single SX1509 expander.
+// Six point ToFs use the add-on SX1509 at 0x71 on IO0, IO3..IO7.
 static SX1509 xshutExpander;
 
-// Registered in physical XSHUT wiring order (0..6) - this is also the
-// order they're brought out of reset and addressed in, see sensor_config.h.
-static VL53L0XSensor tofXshut0("tof_xshut0", &xshutExpander, XSHUT0_PIN, VL53L0X_ADDR_BASE + 0, &VL53_I2C_BUS);
-static VL53L0XSensor tofXshut1("tof_xshut1", &xshutExpander, XSHUT1_PIN, VL53L0X_ADDR_BASE + 1, &VL53_I2C_BUS);
-static VL53L1XSensor tofXshut2("tof_xshut2", &xshutExpander, XSHUT2_PIN, VL53L1X_ADDR_BASE + 0, &VL53_I2C_BUS);
-static VL53L1XSensor tofXshut3("tof_xshut3", &xshutExpander, XSHUT3_PIN, VL53L1X_ADDR_BASE + 1, &VL53_I2C_BUS);
-static VL53L1XSensor tofXshut4("tof_xshut4", &xshutExpander, XSHUT4_PIN, VL53L1X_ADDR_BASE + 2, &VL53_I2C_BUS);
-static VL53L1XSensor tofXshut5("tof_xshut5", &xshutExpander, XSHUT5_PIN, VL53L1X_ADDR_BASE + 3, &VL53_I2C_BUS);
-static VL53L1XSensor tofXshut6("tof_xshut6", &xshutExpander, XSHUT6_PIN, VL53L1X_ADDR_BASE + 4, &VL53_I2C_BUS);
+// Top-left and top-right are VL53L0X; the remaining four point sensors are
+// VL53L1X. Assign each family unique addresses during sequential XSHUT bring-up.
+static VL53L0XSensor tofXshut0("tof_xshut0", &xshutExpander, TOF_XSHUT0_IO, VL53L0X_ADDR_BASE + 0, &VL53_I2C_BUS);
+static VL53L0XSensor tofXshut1("tof_xshut1", &xshutExpander, TOF_XSHUT1_IO, VL53L0X_ADDR_BASE + 1, &VL53_I2C_BUS);
+static VL53L1XSensor tofXshut3("tof_xshut3", &xshutExpander, TOF_XSHUT3_IO, VL53L1X_ADDR_BASE + 0, &VL53_I2C_BUS);
+static VL53L1XSensor tofXshut4("tof_xshut4", &xshutExpander, TOF_XSHUT4_IO, VL53L1X_ADDR_BASE + 1, &VL53_I2C_BUS);
+static VL53L1XSensor tofXshut5("tof_xshut5", &xshutExpander, TOF_XSHUT5_IO, VL53L1X_ADDR_BASE + 2, &VL53_I2C_BUS);
+static VL53L1XSensor tofXshut6("tof_xshut6", &xshutExpander, TOF_XSHUT6_IO, VL53L1X_ADDR_BASE + 3, &VL53_I2C_BUS);
 
 static MatrixLidarSensor tof8x8("tof_8x8", MATRIX_LIDAR_ADDR, &MATRIX_LIDAR_I2C_BUS);
 #if SERIAL_TOF_ENABLED
@@ -51,13 +50,22 @@ void distance_sensors_init() {
     MATRIX_LIDAR_I2C_BUS.begin();
     MATRIX_LIDAR_I2C_BUS.setClock(100000); // conservative default for this module
 
-    if (xshutExpander.begin(SX1509_I2C_ADDRESS, SX1509_I2C_BUS) == 0) {
+    if (!xshutExpander.begin(SX1509_I2C_ADDRESS, SX1509_I2C_BUS)) {
         Serial.println("distance_sensors_init: SX1509 expander failed to initialise");
     }
 
+    // Match the proven bring-up sequence used by the reference robot: make
+    // every SX1509 pin an output and hold the entire expander bank low before
+    // releasing any VL53 sensor. SensorManager then enables each used channel
+    // one at a time and assigns its unique I2C address before proceeding.
+    for (uint8_t io = 0; io < 16; ++io) {
+        xshutExpander.pinMode(io, OUTPUT);
+        xshutExpander.digitalWrite(io, LOW);
+    }
+    delay(100);
+
     sensorManager.addSensor(&tofXshut0);
     sensorManager.addSensor(&tofXshut1);
-    sensorManager.addSensor(&tofXshut2);
     sensorManager.addSensor(&tofXshut3);
     sensorManager.addSensor(&tofXshut4);
     sensorManager.addSensor(&tofXshut5);
@@ -94,6 +102,14 @@ void distance_sensors_print() {
             Serial.print(" mm");
         } else {
             Serial.print("invalid");
+        }
+        if (strncmp(s->getName(), "tof_xshut", 9) == 0) {
+            const VL53L1XSensor* tof = static_cast<const VL53L1XSensor*>(s);
+            Serial.print(" [init=");
+            Serial.print(tof->isInitialized() ? 1 : 0);
+            Serial.print(" range_status="); Serial.print(tof->getRangeStatus());
+            Serial.print(" i2c_status="); Serial.print(tof->getI2CStatus());
+            Serial.print(']');
         }
         Serial.print("   ");
     }

@@ -246,7 +246,7 @@ depth camera:
 
 The **Wiring** tab records what is plugged in where. Give each sensor or
 actuator a human name ("Front top right ToF"), pick its type, and pick its
-port — each type only offers ports that suit it (XSHUT lines for VL53s,
+port — each type only offers ports that suit it (SX1509 channels for VL53s,
 Serial1–8 for the serial ToF, A0–A13 for IR and so on). The name then
 replaces the raw key (`tof.xshut3`) across the dashboard and plots.
 

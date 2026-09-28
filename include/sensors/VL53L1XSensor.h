@@ -26,8 +26,14 @@ public:
     void update() override;
     uint16_t getDistanceMM() const override { return lastRangeMM_; }
     // False if begin() never succeeded, or the last reading wasn't a valid range.
-    bool isValid() const override { return initialized_ && lastStatus_ == 0; }
+    bool isValid() const override {
+        return initialized_ && hasSample_ && (millis() - lastSampleAt_ <= 250) &&
+               (noReturn_ || lastStatus_ == 0);
+    }
     const char* getName() const override { return name_; }
+    bool isInitialized() const { return initialized_; }
+    uint8_t getRangeStatus() const { return lastStatus_; }
+    uint8_t getI2CStatus() const { return sensor_.last_status; }
 
 private:
     const char* name_;
@@ -39,6 +45,9 @@ private:
     VL53L1X sensor_;
     uint16_t lastRangeMM_ = 0;
     uint8_t lastStatus_ = 255;
+    uint32_t lastSampleAt_ = 0;
+    bool hasSample_ = false;
+    bool noReturn_ = false;
     bool initialized_ = false;
 };
 

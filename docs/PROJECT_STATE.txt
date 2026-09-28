@@ -78,7 +78,7 @@ BluetoothSerial.py generic serial worker thread
 
 1. Starts USB `Serial` and the CH9143 Bluetooth bridge on `Serial1` at 115200 baud.
 2. Enables board IO power by driving Teensy pin 49 high.
-3. Initializes the distance-sensor subsystem. This starts both I2C buses, initializes the SX1509, registers the enabled distance sensors, holds all VL53 devices in reset, then releases and assigns them one at a time. The serial TOF is disabled because Serial2 is allocated to drive PWM.
+3. Initializes the distance-sensor subsystem. This starts both I2C buses, initializes the add-on SX1509 at `0x71`, registers the enabled distance sensors, holds all VL53 devices in reset, then releases and assigns them one at a time. The serial TOF is disabled because Serial2 is allocated to drive PWM.
 4. Initializes the TCS34725 colour sensor on `Wire1`.
 5. Initializes the PMW3901 optical-flow sensor on SPI.
 6. Initializes the BNO055 IMU on `Wire1`.
@@ -101,7 +101,7 @@ bool isValid() const;
 const char* getName() const;
 ```
 
-`SensorManager` stores up to 16 `DistanceSensor` pointers. The current configuration registers 12: seven VL53 sensors, one 8x8 array, and four IR sensors. The serial TOF is disabled to free Serial2 for the drive ESCs. Ultrasonic support remains disabled pending separate hardware/power validation; D30--D33 are now free because the encoders moved to Digital Raw 2.
+`SensorManager` stores up to 16 `DistanceSensor` pointers. The current configuration registers 13: two VL53L0X sensors, four VL53L1X sensors, one 8x8 array, four IR sensors, and two ultrasonic sensors. The serial TOF is disabled to free Serial2 for the drive ESCs.
 
 The public access points are in `DistanceSensors.h`:
 
@@ -132,9 +132,9 @@ The wrappers cache values. Other code should use the facade getters rather than 
 
 | Bus | Teensy pins | Device | Address or select | Notes |
 |---|---:|---|---:|---|
-| `Wire` I2C bus 0 | SDA 18, SCL 19 | SX1509 IO expander | `0x3F` | Controls all seven VL53 XSHUT lines |
-| `Wire` I2C bus 0 | SDA 18, SCL 19 | 2 x VL53L0X | `0x30`, `0x31` | Addresses assigned at startup |
-| `Wire` I2C bus 0 | SDA 18, SCL 19 | 5 x VL53L1X | `0x35` to `0x39` | Addresses assigned at startup |
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | Add-on SX1509 TOF expander | `0x71` | Controls six point-ToF XSHUT lines on IO0, IO3, IO4, IO5, IO6, IO7 |
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | 2 x VL53L0X | `0x30` to `0x31` | Top-left/top-right; SX1509 IO0/IO3 |
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | 4 x VL53L1X | `0x35` to `0x38` | Other point ToFs; SX1509 IO4/IO5/IO6/IO7 |
 | `Wire1` I2C bus 1 | SDA 17, SCL 16 | BNO055 | `0x28` | IMU part of SEN0253 |
 | `Wire1` I2C bus 1 | SDA 17, SCL 16 | TCS34725 | `0x29` | Raw RGBC colour sensor |
 | `Wire1` I2C bus 1 | SDA 17, SCL 16 | DFRobot 8x8 TOF | `0x33` | 64-zone matrix sensor |
@@ -163,19 +163,18 @@ D28 and D29 are also the `Serial7` pins. The old single-servo test on these pins
 
 ### VL53 XSHUT mapping
 
-The XSHUT numbers are SX1509 IO numbers, not Teensy GPIO numbers.
+The firmware's logical `tof_xshutN` names retain existing robot roles; the physical SX1509 IO numbers are shown in the channel column.
 
 | Physical label | SX1509 IO | Sensor type | Runtime I2C address | Registered name |
 |---|---:|---|---:|---|
-| XSHUT0 | IO0 | VL53L0X | `0x30` | `tof_xshut0` |
-| XSHUT1 | IO1 | VL53L0X | `0x31` | `tof_xshut1` |
-| XSHUT2 | IO2 | VL53L1X | `0x35` | `tof_xshut2` |
-| XSHUT3 | IO3 | VL53L1X | `0x36` | `tof_xshut3` |
-| XSHUT4 | IO4 | VL53L1X | `0x37` | `tof_xshut4` |
-| XSHUT5 | IO5 | VL53L1X | `0x38` | `tof_xshut5` |
-| XSHUT6 | IO6 | VL53L1X | `0x39` | `tof_xshut6` |
+| Top_Left | IO0 | VL53L0X | `0x30` | `tof_xshut0` |
+| Top_Right | IO3 | VL53L0X | `0x31` | `tof_xshut1` |
+| Front_Top_Right | IO4 | VL53L1X | `0x35` | `tof_xshut3` |
+| Front_Bottom_Right | IO5 | VL53L1X | `0x36` | `tof_xshut4` |
+| Front_Bottom_Left | IO6 | VL53L1X | `0x37` | `tof_xshut5` |
+| Front_Top_Left | IO7 | VL53L1X | `0x38` | `tof_xshut6` |
 
-At boot, `SensorManager::beginAll()` first drives every XSHUT low. It then starts the sensors in registration order, changes each from the shared factory address `0x29`, and only then releases the next sensor.
+At boot, all 16 outputs on the add-on SX1509 are configured as outputs and driven low, matching the reference project's reset sequence. `SensorManager::beginAll()` then starts the six used channels in registration order: release one XSHUT, wait 100 ms, initialize, assign its unique address, and only then release the next sensor. The two top L0X channels use continuous ranging with ready/status checks; the other four L1X channels use Short mode, an 8x8 ROI, a 50 ms timing budget, and continuous ranging at a 50 ms period. Both drivers poll again after I2C errors so a transient failure does not permanently strand a sensor. Fresh weak/no-return results are exposed as 0 mm, while other bad statuses and stale samples remain invalid.
 
 ## Implemented hardware status
 
@@ -188,7 +187,7 @@ Status terms:
 
 | Hardware | Code status | Last known hardware status | Main files |
 |---|---|---|---|
-| 2 x VL53L0X and 5 x VL53L1X | Implemented through common distance API | **XSHUT6 needs revalidation** after changing to VL53L1X | `DistanceSensors.cpp`, `VL53L0XSensor.cpp`, `VL53L1XSensor.cpp` |
+| 2 x VL53L0X + 4 x VL53L1X | Implemented through the common distance API; add-on SX1509 `0x71` IO0/3/4/5/6/7 channels are sequenced and assigned unique addresses | **Awaiting upload and live verification** | `DistanceSensors.cpp`, both VL53 drivers, `sensor_config.h` |
 | DFRobot 8x8 TOF | Full 64-zone reads, centre value and minimum value implemented; hardware polling is limited to 10 Hz with a 150 ms timeout | **Live 64-zone grids observed on 22 September 2026.** | `MatrixLidarSensor.cpp`, `DistanceSensors.cpp` |
 | Serial TOF | Nine-byte frame parser retained but disabled | **Parked:** Serial2 D7/D8 are now main-drive PWM outputs | `SerialTofSensor.cpp`, `sensor_config.h` |
 | USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **Verified on both transports. Bluetooth received 152 JSON messages, 17 telemetry packets, 114 signal definitions and seven commands. USB regression received 148 JSON messages, 13 telemetry packets, 114 definitions and seven commands.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
@@ -262,7 +261,7 @@ When the Python GUI sends `{"type":"hello"}` over USB, the firmware starts newli
 
 The actual telemetry names produced by the current firmware are:
 
-- `tof.xshut0` through `tof.xshut6`
+- `tof.xshut0`, `tof.xshut1`, `tof.xshut3` through `tof.xshut6` (six point sensors)
 - `tof.8x8` for the near-centre matrix zone when valid
 - `tof.array_min` for the closest valid matrix zone
 - `tof.array.r0c0` through `tof.array.r7c7` for all 64 matrix zones
@@ -443,7 +442,7 @@ ARENA VIEW AND NAVIGATION
   proven architecture in Group 7, adapted to Group 23 telemetry names and
   hardware rather than modifying or depending on Group 7's repository.
 - The map combines `encoder.0`, `encoder.1` and `imu.heading` for local pose,
-  plots all `tof.xshut0` through `tof.xshut6` rays, and reduces the 64
+  plots all six configured point-ToF rays, and reduces the 64
   `tof.array.rNcN` zones into eight horizontal 8x8 TOF rays.
 - Every range sensor has persistent robot-relative X/right, Y/forward and
   angle controls. Encoder scales, polarity, wheel track, matrix FOV and matrix
@@ -479,7 +478,7 @@ ARENA VIEW AND NAVIGATION
   sensor layout and commands; it must not be copied into Group 23 wholesale.
   The existing Group 23 firmware navigation remains the conservative 8x8/IMU
   obstacle-avoidance controller, separately gated behind Debug Mode.
-- Arena View placement now includes every active Group 23 sensor: seven VL53s,
+- Arena View placement now includes every active Group 23 sensor: six VL53s,
   8x8, two ultrasonics, optical flow and inductive sensors. Placement names
   follow the Wiring tab, and each marker has saved x/y/aim/height. VL53,
   8x8 and ultrasonic markers have distinct colours. IMU and encoders still

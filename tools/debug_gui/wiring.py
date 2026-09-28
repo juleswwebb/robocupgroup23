@@ -2,7 +2,7 @@
 wiring.py
 
 Hardware wiring map: which physical port every sensor and actuator is
-plugged into, and a human name for each ("Top right ToF" -> XSHUT0).
+plugged into, and a human name for each installed sensor.
 
 The port catalogue below mirrors include/sensor_config.h. The firmware
 already reads every port that lists signals and reports its telemetry
@@ -106,7 +106,7 @@ KINDS: dict[str, DeviceKind] = {
 }
 
 PORT_TYPE_LABELS = {
-    "xshut": "XSHUT (VL53 via SX1509)",
+    "xshut": "VL53 channels (SX1509 0x71)",
     "i2c": "I2C",
     "uart": "Serial (UART)",
     "pin": "Analog / digital pins",
@@ -122,15 +122,16 @@ PORT_TYPE_LABELS = {
 def _build_ports() -> list[Port]:
     ports: list[Port] = []
 
-    # Seven VL53s, reset lines on the SX1509 - not Teensy GPIO - and all
-    # sharing I2C bus 0. Which type sits on which line is fixed in
-    # DistanceSensors.cpp.
-    vl53_types = ["vl53l0x", "vl53l0x", "vl53l1x", "vl53l1x", "vl53l1x", "vl53l1x", "vl53l1x"]
-    for n, expects in enumerate(vl53_types):
+    # Six ToFs on the add-on SX1509 at 0x71; the top pair are L0X and the
+    # remaining four are L1X. Port IDs and IO mapping mirror the firmware.
+    tof_channels = ((0, 0, "vl53l0x"), (1, 3, "vl53l0x"),
+                    (3, 4, "vl53l1x"), (4, 5, "vl53l1x"),
+                    (5, 6, "vl53l1x"), (6, 7, "vl53l1x"))
+    for logical, io_pin, sensor_kind in tof_channels:
         ports.append(Port(
-            f"xshut{n}", f"XSHUT{n}  ·  SX1509 IO{n}", "xshut",
-            signals=((f"tof.xshut{n}", "Distance"),),
-            expects=expects, pins=("D18", "D19"), bus="wire",
+            f"xshut{logical}", f"ToF channel IO{io_pin} · SX1509 0x71", "xshut",
+            signals=((f"tof.xshut{logical}", "Distance"),),
+            expects=sensor_kind, pins=("D18", "D19"), bus="wire",
         ))
 
     i2c_devices = {
@@ -268,9 +269,12 @@ class Device:
 
 def default_devices() -> list[Device]:
     """The wiring sensor_config.h currently assumes, with plain names."""
+    channels = ((0, 0, "vl53l0x"), (1, 3, "vl53l0x"),
+                (3, 4, "vl53l1x"), (4, 5, "vl53l1x"),
+                (5, 6, "vl53l1x"), (6, 7, "vl53l1x"))
     devices = [
-        Device(f"ToF XSHUT{n}", "vl53l0x" if n in (0, 1) else "vl53l1x", f"xshut{n}")
-        for n in range(7)
+        Device(f"ToF IO{io_pin}", sensor_kind, f"xshut{logical}")
+        for logical, io_pin, sensor_kind in channels
     ]
     devices += [
         Device("CH9143 Bluetooth", "bluetooth", "serial1"),

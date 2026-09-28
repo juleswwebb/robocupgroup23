@@ -53,32 +53,30 @@
 #define DRUM_COMMAND_TIMEOUT_MS 300
 #define DRUM_TEST_MAX_PERCENT 100
 
-// The 7 VL53L0X/L1X sensors are on I2C bus 0 (Wire, pins 18/19).
+// The six point VL53 sensors and their SX1509 are on I2C bus 0
+// (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire
 // The 8x8 array is on I2C bus 1 (Wire1, pins 16/17) - confirmed by scanning.
 #define MATRIX_LIDAR_I2C_BUS Wire1
 
-// All 7 VL53 XSHUT lines go through a SparkFun SX1509 I2C IO expander
-// (not direct to Teensy GPIO) - these are SX1509 pin numbers (IO0-IO15),
-// not Teensy pins. This order is also the sensor bring-up order (see
-// SensorManager::beginAll).
-#define SX1509_I2C_ADDRESS 0x3F
+// Six point ToFs use the add-on SX1509 at 0x71 on IO0, IO3-IO7.
+// These are expander pins, not Teensy GPIO pins.
+#define SX1509_I2C_ADDRESS 0x71
 #define SX1509_I2C_BUS Wire
 
-#define XSHUT0_PIN 0   // VL53L0X
-#define XSHUT1_PIN 1   // VL53L0X
-#define XSHUT2_PIN 2   // VL53L1X
-#define XSHUT3_PIN 3   // VL53L1X
-#define XSHUT4_PIN 4   // VL53L1X
-#define XSHUT5_PIN 5   // VL53L1X
-#define XSHUT6_PIN 6   // VL53L1X
+#define TOF_XSHUT0_IO 0
+#define TOF_XSHUT1_IO 3
+#define TOF_XSHUT3_IO 4
+#define TOF_XSHUT4_IO 5
+#define TOF_XSHUT5_IO 6
+#define TOF_XSHUT6_IO 7
 
 // I2C addresses assigned once each sensor is brought out of reset (7-bit).
 // 0x29 is every VL53L0X/L1X's shared power-on default and must never be
 // reused once other sensors have been addressed - that's the whole reason
 // for the one-at-a-time XSHUT bring-up sequence.
-#define VL53L0X_ADDR_BASE 0x30   // -> 0x30, 0x31 for the 2 VL53L0X
-#define VL53L1X_ADDR_BASE 0x35   // -> 0x35..0x39 for the 5 VL53L1X
+#define VL53L1X_ADDR_BASE 0x35   // -> 0x35..0x38 for four VL53L1X
+#define VL53L0X_ADDR_BASE 0x30   // -> 0x30..0x31 for top-left/top-right VL53L0X
 
 #define MATRIX_LIDAR_ADDR 0x33   // fixed by the DFRobot module itself
 

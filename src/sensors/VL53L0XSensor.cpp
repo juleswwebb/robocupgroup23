@@ -16,13 +16,14 @@ void VL53L0XSensor::preReset() {
 bool VL53L0XSensor::begin() {
     // Release this sensor from reset. Wait for it to boot before talking to it.
     expander_->digitalWrite(xshutPin_, HIGH);
-    delay(10);
+    delay(100);
 
     sensor_.setTimeout(500);
     if (!sensor_.init()) {
         Serial.print("VL53L0X '");
         Serial.print(name_);
         Serial.println("' failed to initialise (check wiring/power/bus)");
+        expander_->digitalWrite(xshutPin_, LOW);
         initialized_ = false;
         return false;
     }
@@ -32,6 +33,7 @@ bool VL53L0XSensor::begin() {
     sensor_.setAddress(address_);
     sensor_.setMeasurementTimingBudget(timingBudgetUs_);
     sensor_.startContinuous();
+    sensor_.setTimeout(5);
     initialized_ = true;
     return true;
 }
@@ -40,6 +42,29 @@ void VL53L0XSensor::update() {
     if (!initialized_) {
         return; // never came up - don't block the scheduler on a dead sensor
     }
+    const uint8_t ready = sensor_.readReg(VL53L0X::RESULT_INTERRUPT_STATUS);
+    if (sensor_.last_status != 0 || !(ready & 7)) {
+        return;
+    }
+
+    const uint8_t rangeStatus = (sensor_.readReg(VL53L0X::RESULT_RANGE_STATUS) & 0x78) >> 3;
+    if (sensor_.last_status != 0) {
+        lastStatus_ = 255;
+        hasSample_ = true;
+        lastSampleAt_ = millis();
+        return;
+    }
+
     lastRangeMM_ = sensor_.readRangeContinuousMillimeters();
-    lastTimeout_ = sensor_.timeoutOccurred();
+    lastStatus_ = rangeStatus;
+    lastTimeout_ = sensor_.timeoutOccurred() || sensor_.last_status != 0;
+    noReturn_ = !lastTimeout_ && rangeStatus == 4;
+    hasSample_ = true;
+    lastSampleAt_ = millis();
+
+    if (!lastTimeout_ && rangeStatus == 11 && lastRangeMM_ > 0 && lastRangeMM_ < 8190) {
+        lastStatus_ = 0;
+    } else if (!noReturn_ && !lastTimeout_) {
+        lastTimeout_ = true;
+    }
 }
