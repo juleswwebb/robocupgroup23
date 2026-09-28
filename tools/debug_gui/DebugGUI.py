@@ -1661,6 +1661,10 @@ class RobotDebugGUI(QMainWindow):
         self.recorder.record_parameter("drive.max_percent", 100)
         self.mission_view.set_follow_status("Waiting for drive-limit confirmation and fresh pose…", active=True, waypoint=0)
         self.add_log("INFO", f"Route armed: {len(points)} waypoints; requested 100% drive limit")
+        self.recorder.record_log(
+            "MISSION",
+            f"Route armed: {len(points)} waypoints; waiting for drive-limit confirmation and fresh pose",
+        )
 
     def _stop_mission_route(self, reason="Stopped", *, send_stop=True):
         if self.route_follower is None:
@@ -1677,6 +1681,7 @@ class RobotDebugGUI(QMainWindow):
             self.recorder.record_command("stop", {})
         self.mission_view.set_follow_status(f"Route stopped: {reason}")
         self.add_log("WARN", f"Route stopped: {reason}")
+        self.recorder.record_log("MISSION_STOP", f"Route stopped: {reason}")
 
     def _mission_route_step(self):
         follower = self.route_follower
@@ -1765,6 +1770,9 @@ class RobotDebugGUI(QMainWindow):
                 "Verifying mapped weight with upper/lower ToFs…",
                 active=True, waypoint=follower.index,
             )
+            self.recorder.record_log(
+                "MISSION", "Paused to verify a mapped weight using upper/lower ToF readings",
+            )
             return
         if self.route_pause_until is not None and now < self.route_pause_until:
             return
@@ -1783,10 +1791,11 @@ class RobotDebugGUI(QMainWindow):
                           if math.dist(point, weight.target) > 170]
                 layout.live_obstacles = [item for item in layout.live_obstacles
                                          if math.dist((item["x"], item["y"]), weight.target) > 170]
-            if front_mm is not None and front_mm < MAP_REQUIRED_MM and not points:
-                if weight is None or not weight.front_is_target:
-                    self._stop_mission_route("Nearby 8×8 return could not be located on the map")
-                    return
+            # A close return that cannot be confidently projected onto the
+            # arena is not, by itself, grounds to abandon the route. Continue
+            # following the planned path; coherent mapped clusters below still
+            # trigger a stop-and-replan, and RouteFollower retains the very-close
+            # emergency stop for an immediate hazard.
             if layout.add_live_obstacles(points):
                 self.mission_view.refresh_live_obstacles()
             current = local_to_mission(layout.start, layout.heading_deg, (model.x, model.y))
@@ -1820,6 +1829,11 @@ class RobotDebugGUI(QMainWindow):
                     active=True, waypoint=0,
                 )
                 self.add_log("INFO", f"Route detour {self.route_replans}: {len(new_route)} waypoints")
+                self.recorder.record_log(
+                    "MISSION",
+                    f"Obstacle detected; stopped and replanned detour {self.route_replans}/4 "
+                    f"with {len(new_route)} waypoints",
+                )
                 return
         decision = follower.step(model.x, model.y, model.theta, front_mm, now,
                                  weight=weight, target_leg=target_leg,

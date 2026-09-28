@@ -157,8 +157,10 @@ to the Teensy. Arena View's separate route remains preview-only. Because
 80–100% is a high output and 8×8 obstacle points are approximate, begin
 hardware testing with the wheels raised and then in a clear, supervised area
 with an accessible STOP button. The placement/heading of the 8×8 must be
-checked against real objects before driving: nearby unmappable returns stop
-the route. These are provisional odometry scales, not absolute arena
+checked against real objects before driving: unmappable returns no longer stop
+the route by themselves; only coherent mapped points trigger detours, while a
+return closer than 450 mm still invokes the emergency stop. These are
+provisional odometry scales, not absolute arena
 localisation. Run
 offline regressions with `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tools/debug_gui -p 'test_*.py'` from the repo root.
 

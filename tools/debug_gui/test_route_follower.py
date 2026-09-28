@@ -26,7 +26,8 @@ class RouteFollowerTests(unittest.TestCase):
             route_started_at=1.0,
             bluetooth=SimpleNamespace(is_connected=lambda: True,
                                       send_command=lambda name: sent.append(name)),
-            recorder=SimpleNamespace(record_command=lambda *args: None),
+            recorder=SimpleNamespace(record_command=lambda *args: None,
+                                     record_log=lambda *args: None),
             mission_view=SimpleNamespace(set_follow_status=lambda text: None),
             add_log=lambda *args: None,
         )
@@ -57,7 +58,8 @@ class RouteFollowerTests(unittest.TestCase):
             mission_view=SimpleNamespace(set_robot_pose=lambda *args: None,
                                          set_follow_status=lambda *args, **kwargs: None),
             bluetooth=SimpleNamespace(send_command=lambda *args, **kwargs: sent.append((args, kwargs))),
-            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None),
+            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None,
+                                     record_log=lambda *args, **kwargs: None),
             _drive_controls_available=lambda: True,
             _route_front_range=RobotDebugGUI._route_front_range,
             _stop_mission_route=lambda reason: stopped.append(reason),
@@ -226,12 +228,19 @@ class RouteFollowerTests(unittest.TestCase):
         self.assertIn("8×8", stopped[-1])
         self.assertFalse(sent)
 
-    def test_gui_drives_with_healthy_empty_8x8_frame(self):
+    def test_gui_keeps_following_when_nearby_8x8_return_cannot_be_mapped(self):
         sent = []
         frame = {"encoder.0": 10, "encoder.1": -10,
                  "imu.heading": 0, "imu.cal_gyro": 3,
                  "tof.array_frame_ok": True,
-                 "tof.array_valid_zones": 0}
+                 "tof.array_valid_zones": 1,
+                 "tof.array.r4c2": 500}
+        layout = MissionLayout()
+        layout.route = [{"x": 1325, "y": 325, "target": False}]
+        arena = ArenaModel()
+        arena.sensor_specs = [{"kind": "matrix", "x": 0, "y": 0,
+                               "angle": 0, "enabled": True}]
+        arena.latest = frame
         fake = SimpleNamespace(
             route_follower=RouteFollower([(0, 1000)]),
             route_last_frame_monotonic=time.monotonic(),
@@ -242,16 +251,18 @@ class RouteFollowerTests(unittest.TestCase):
             route_pause_until=None,
             route_resume_after_frame=None,
             telemetry={},
-            arena_view=SimpleNamespace(model=SimpleNamespace(latest=frame, x=0, y=0, theta=math.pi/2)),
+            arena_view=SimpleNamespace(model=arena),
             mission_view=SimpleNamespace(set_robot_pose=lambda *args: None,
+                                         model=layout,
                                          set_follow_status=lambda *args, **kwargs: None),
             bluetooth=SimpleNamespace(send_command=lambda *args, **kwargs: sent.append((args, kwargs))),
-            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None),
+            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None,
+                                     record_log=lambda *args, **kwargs: None),
             _drive_controls_available=lambda: True,
             _route_front_range=RobotDebugGUI._route_front_range,
             _stop_mission_route=lambda reason: self.fail(reason),
         )
-        fake.route_last_obstacle_frame = fake.route_last_frame_monotonic
+        fake.route_last_obstacle_frame = None
         RobotDebugGUI._mission_route_step(fake)
         self.assertEqual(sent, [(("drive_set",), {"left": 85, "right": 100})])
 
@@ -285,7 +296,8 @@ class RouteFollowerTests(unittest.TestCase):
                 set_follow_status=lambda *args, **kwargs: None,
             ),
             bluetooth=SimpleNamespace(send_command=lambda *args, **kwargs: sent.append((args, kwargs))),
-            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None),
+            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None,
+                                     record_log=lambda *args, **kwargs: None),
             _drive_controls_available=lambda: True,
             _route_front_range=RobotDebugGUI._route_front_range,
             _stop_mission_route=lambda reason: self.fail(reason),
