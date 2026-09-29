@@ -352,6 +352,7 @@ class RobotDebugGUI(QMainWindow):
         self.servo_reported_angle_deg = 125
         self.servo_position_mode = False
         self.magnet_is_on = False
+        self.magnet_operator_latched = False
         self.robot_debug_mode = False
         self.route_follower = None
         self.robot_mission_armed = False
@@ -1113,7 +1114,8 @@ class RobotDebugGUI(QMainWindow):
             "The 8×8 TOF confirms forward obstacles over multiple frames, then the "
             "robot turns toward the clearer side and keeps exploring. The angled "
             "top/bottom pairs look for weights, center on a confirmed target, and "
-            "drive through it. Drum motors run continuously at −100% / −100%. "
+            "drive through it. Drum motors run continuously at −100% / −100%, "
+            "and the magnet stays on throughout the run. "
             "Test in a clear, supervised area; this mode commands up to 100% drive."
         )
         explore_hint.setWordWrap(True)
@@ -1438,6 +1440,9 @@ class RobotDebugGUI(QMainWindow):
         self._stop_mission_route("Autonomous explore started")
         self._set_drive_armed(False)
         self._stop_drum_hold()
+        # A robot report of AUTO magnet ON must not become a manual keepalive
+        # that re-energizes the magnet after this run ends.
+        self.magnet_operator_latched = False
         self.explore_requested = True
         self.explore_seen_active = False
         self.explore_start_sent_at = time.monotonic()
@@ -1445,6 +1450,7 @@ class RobotDebugGUI(QMainWindow):
         self.recorder.record_command("explore_start", {})
         self.add_log("TX", "explore_start()")
         self._update_exploration_controls()
+        self._update_magnet_controls()
 
     def _stop_exploration(self, send_command: bool = True, reason: str | None = None):
         was_requested = self.explore_requested or bool(
@@ -1463,6 +1469,7 @@ class RobotDebugGUI(QMainWindow):
             theme.set_pill_state(self.explore_status_label, "ok")
         else:
             self._update_exploration_controls()
+        self._update_magnet_controls()
 
     def _send_explore_keepalive(self):
         if not (self.explore_requested or self.telemetry.get("explore.active")):
@@ -1683,7 +1690,14 @@ class RobotDebugGUI(QMainWindow):
 
     def _update_magnet_controls(self):
         available = self._magnet_controls_available()
-        self.magnet_button.setEnabled(available)
+        explore_owns_magnet = self.explore_requested or bool(
+            self.telemetry.get("explore.active", False)
+        )
+        self.magnet_button.setEnabled(available and not explore_owns_magnet)
+        if explore_owns_magnet:
+            self.magnet_status_label.setText("AUTONOMOUS RUN · MAGNET CONTROLLED BY ROBOT")
+            theme.set_pill_state(self.magnet_status_label, "busy")
+            return
         if not available and self.magnet_is_on:
             # The firmware independently drops the output on Debug Mode exit;
             # send an explicit OFF too whenever the link is still available.
@@ -1712,8 +1726,10 @@ class RobotDebugGUI(QMainWindow):
 
     def _request_magnet(self, enabled: bool, status: str | None = None):
         if enabled and not self._magnet_controls_available():
+            self.magnet_operator_latched = False
             self._set_magnet_visual(False, "ENABLE DEBUG MODE / MAGNET CONTROL", "")
             return
+        self.magnet_operator_latched = enabled
         if self.bluetooth.is_connected():
             arguments = {"enabled": enabled}
             self.recorder.record_command("magnet_set", arguments)
@@ -1728,7 +1744,7 @@ class RobotDebugGUI(QMainWindow):
         self._request_magnet(enabled)
 
     def _send_magnet_keepalive(self):
-        if not self.magnet_is_on:
+        if not self.magnet_operator_latched:
             return
         if not self._magnet_controls_available():
             self._set_magnet_visual(False, "OFF · CONTROL UNAVAILABLE", "bad")
@@ -1745,7 +1761,11 @@ class RobotDebugGUI(QMainWindow):
     def _magnet_reported_state(self, enabled: bool):
         if enabled == self.magnet_is_on:
             return
-        reason = "ON · ROBOT CONFIRMED" if enabled else "OFF · ROBOT REPORTED OFF"
+        explore_owns_magnet = self.explore_requested or bool(
+            self.telemetry.get("explore.active", False)
+        )
+        reason = ("ON · AUTONOMOUS RUN" if explore_owns_magnet else
+                  "ON · ROBOT CONFIRMED") if enabled else "OFF · ROBOT REPORTED OFF"
         self._set_magnet_visual(enabled, reason, "busy" if enabled else "ok")
 
     def focusOutEvent(self, event):
@@ -3572,6 +3592,8 @@ class RobotDebugGUI(QMainWindow):
         ] = value
         if name.startswith("explore."):
             self._update_exploration_controls()
+            if name == "explore.active":
+                self._update_magnet_controls()
         if name == "magnet.on" and isinstance(value, bool):
             self._magnet_reported_state(value)
         if name == "servo.pin" and isinstance(value, (int, float)):

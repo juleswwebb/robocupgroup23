@@ -3,6 +3,7 @@
 #include "DistanceSensors.h"
 #include "DriveControl.h"
 #include "DrumControl.h"
+#include "MagnetControl.h"
 #include "sensor_config.h"
 #include "sensors/DistanceSensor.h"
 
@@ -28,20 +29,20 @@ constexpr uint32_t RANGE_SAMPLE_PERIOD_MS = 90;
 constexpr uint32_t HOST_LEASE_MS = 700;
 constexpr uint32_t SENSOR_LOSS_LIMIT_MS = 500;
 constexpr uint32_t AVOID_MIN_TURN_MS = 500;
-constexpr uint32_t AVOID_MAX_TURN_MS = 1250;
+constexpr uint32_t AVOID_MAX_TURN_MS = 5000;
 constexpr uint32_t ALIGN_MAX_MS = 2600;
-constexpr uint32_t ALIGN_PULSE_MS = 65;
-constexpr uint32_t ALIGN_PERIOD_MS = 240;
 constexpr uint32_t WEIGHT_EVIDENCE_LOSS_MS = 450;
 constexpr uint32_t APPROACH_MIN_MS = 350;
 constexpr uint32_t APPROACH_MAX_MS = 2800;
 constexpr uint32_t WEIGHT_COOLDOWN_MS = 1600;
 constexpr uint16_t WEIGHT_TOP_BOTTOM_GAP_MM = 150;
-constexpr uint16_t WEIGHT_MAX_RANGE_MM = 1200;
+constexpr uint16_t WEIGHT_MAX_RANGE_MM = 500;
+constexpr uint16_t WEIGHT_BACKGROUND_DROP_MM = 120;
 constexpr uint8_t WEIGHT_CONFIRM_SAMPLES = 3;
 constexpr int STRAIGHT_LEFT_PERCENT = 100;
 constexpr int STRAIGHT_RIGHT_PERCENT = 85;
 constexpr int TURN_PERCENT = 85;
+constexpr int ALIGN_TURN_PERCENT = 80;
 constexpr int DRUM_LEFT_PERCENT = -100;
 constexpr int DRUM_RIGHT_PERCENT = -100;
 
@@ -62,6 +63,9 @@ uint32_t cooldownUntilMs = 0;
 uint8_t obstacleVotes = 0;
 uint8_t clearVotes = 0;
 uint8_t weightVotes = 0;
+int8_t weightCandidateSide = 0;
+uint16_t leftWeightBackgroundMm = 0;
+uint16_t rightWeightBackgroundMm = 0;
 uint16_t frontMm = 0;
 uint16_t leftMm = 0;
 uint16_t rightMm = 0;
@@ -140,25 +144,37 @@ uint16_t matrix_side_open_score(const uint16_t* grid, bool rightSide) {
 }
 
 bool weight_pair(const char* topName, const char* bottomName,
-                 uint16_t& top, uint16_t& bottom) {
+                 uint16_t& top, uint16_t& bottom, uint16_t& background) {
     top = valid_range(topName);
     bottom = valid_range(bottomName);
-    return bottom > 0 && bottom <= WEIGHT_MAX_RANGE_MM &&
-           top >= bottom + WEIGHT_TOP_BOTTOM_GAP_MM;
+    const bool candidate = bottom > 0 && bottom <= WEIGHT_MAX_RANGE_MM &&
+        background >= bottom + WEIGHT_BACKGROUND_DROP_MM &&
+        (top == 0 || top >= bottom + WEIGHT_TOP_BOTTOM_GAP_MM);
+    // Learn the normal view of the ground on this side. Freeze it while a
+    // candidate is visible so a real weight stays detectable during centering.
+    if (bottom && !candidate) {
+        background = background ? (background * 7U + bottom + 4U) / 8U : bottom;
+    }
+    return candidate;
 }
 
 void sample_weights(uint32_t now) {
     if (now - lastWeightSampleMs < RANGE_SAMPLE_PERIOD_MS) return;
     lastWeightSampleMs = now;
     leftWeightSignature = weight_pair("tof_xshut6", "tof_xshut5",
-                                      leftTopMm, leftBottomMm);
+                                      leftTopMm, leftBottomMm,
+                                      leftWeightBackgroundMm);
     rightWeightSignature = weight_pair("tof_xshut3", "tof_xshut4",
-                                       rightTopMm, rightBottomMm);
-    if (leftWeightSignature || rightWeightSignature) {
+                                       rightTopMm, rightBottomMm,
+                                       rightWeightBackgroundMm);
+    const int8_t candidateSide = leftWeightSignature && rightWeightSignature ? 2 :
+        leftWeightSignature ? -1 : rightWeightSignature ? 1 : 0;
+    if (candidateSide != 0 && candidateSide == weightCandidateSide) {
         if (weightVotes < WEIGHT_CONFIRM_SAMPLES) ++weightVotes;
     } else {
-        weightVotes = 0;
+        weightVotes = candidateSide ? 1 : 0;
     }
+    weightCandidateSide = candidateSide;
 
     float sumRight = 0.0f;
     float sumForward = 0.0f;
@@ -270,6 +286,17 @@ void finish_avoidance(uint32_t now) {
     drive_control_stop();
     set_state(State::Forward, "Obstacle avoided; exploring forward");
     lastObstacleTriggerMs = now;
+    // The robot is facing a different patch of ground after turning.
+    leftWeightBackgroundMm = rightWeightBackgroundMm = 0;
+    weightVotes = weightCandidateSide = 0;
+}
+
+void finish_weight_attempt(uint32_t now, const char* status) {
+    cooldownUntilMs = now + WEIGHT_COOLDOWN_MS;
+    leftWeightBackgroundMm = leftBottomMm ? leftBottomMm : leftWeightBackgroundMm;
+    rightWeightBackgroundMm = rightBottomMm ? rightBottomMm : rightWeightBackgroundMm;
+    weightVotes = weightCandidateSide = 0;
+    set_state(State::Forward, status);
 }
 }
 
@@ -299,6 +326,8 @@ bool exploration_mode_start() {
 
     active = true;
     obstacleVotes = clearVotes = weightVotes = 0;
+    weightCandidateSide = 0;
+    leftWeightBackgroundMm = rightWeightBackgroundMm = 0;
     lastKeepaliveMs = now;
     lastRangeSampleMs = lastWeightSampleMs = now - RANGE_SAMPLE_PERIOD_MS;
     lastObstacleTriggerMs = now;
@@ -312,6 +341,7 @@ bool exploration_mode_start() {
     set_state(State::Forward, "Exploring; drum running at -100% / -100%");
     drive_forward();
     drum_control_set_percent(DRUM_LEFT_PERCENT, DRUM_RIGHT_PERCENT);
+    magnet_control_set(true);
     return true;
 }
 
@@ -327,6 +357,7 @@ void exploration_mode_stop(const char* message) {
     if (wasActive) {
         drive_control_stop();
         drum_control_stop();
+        magnet_control_off();
     }
     if (message == nullptr || *message == '\0') message = "Stopped by operator";
     strncpy(reason, message, sizeof(reason) - 1);
@@ -357,8 +388,18 @@ void exploration_mode_update() {
         }
 
         if (state == State::Forward) {
-            if (now >= cooldownUntilMs && (leftWeightSignature || rightWeightSignature)) {
-                if (weightVotes >= WEIGHT_CONFIRM_SAMPLES) {
+            // A confirmed wall wins over a possible weight signature.
+            if (obstacle_ahead(now, grid, newMatrixFrame)) {
+                choose_turn_direction(grid);
+                ++turnsTaken;
+                clearVotes = 0;
+                lastAvoidEvidenceMs = now;
+                set_state(State::AvoidTurn,
+                          turnDirection > 0
+                              ? "Front obstacle confirmed; turning right to explore"
+                              : "Front obstacle confirmed; turning left to explore");
+            } else if (now >= cooldownUntilMs &&
+                       weightVotes >= WEIGHT_CONFIRM_SAMPLES) {
                     lastEvidenceMs = now;
                     targetBearingDeg = constrain(targetBearingDeg, -35.0f, 35.0f);
                     if (fabsf(targetBearingDeg) <= 7.0f) {
@@ -369,25 +410,15 @@ void exploration_mode_update() {
                         set_state(State::WeightAlign,
                                   "Weight pair confirmed; centering target");
                     }
-                }
-            } else if (obstacle_ahead(now, grid, newMatrixFrame)) {
-                choose_turn_direction(grid);
-                ++turnsTaken;
-                clearVotes = 0;
-                lastAvoidEvidenceMs = now;
-                set_state(State::AvoidTurn,
-                          turnDirection > 0
-                              ? "Front obstacle confirmed; turning right to explore"
-                              : "Front obstacle confirmed; turning left to explore");
             }
         } else if (state == State::WeightAlign) {
             if (leftWeightSignature || rightWeightSignature) lastEvidenceMs = now;
             if (now - lastEvidenceMs > WEIGHT_EVIDENCE_LOSS_MS) {
-                cooldownUntilMs = now + WEIGHT_COOLDOWN_MS;
-                set_state(State::Forward, "Weight evidence lost during alignment; resuming exploration");
+                finish_weight_attempt(now,
+                    "Weight evidence lost during alignment; resuming exploration");
             } else if (now - stateStartedMs > ALIGN_MAX_MS) {
-                cooldownUntilMs = now + WEIGHT_COOLDOWN_MS;
-                set_state(State::Forward, "Weight centering timed out; resuming exploration");
+                finish_weight_attempt(now,
+                    "Weight centering timed out; resuming exploration");
             } else if (fabsf(targetBearingDeg) <= 7.0f) {
                 ++weightsSeen;
                 set_state(State::WeightApproach,
@@ -400,9 +431,8 @@ void exploration_mode_update() {
             if ((now - stateStartedMs >= APPROACH_MIN_MS &&
                  now - lastEvidenceMs >= WEIGHT_EVIDENCE_LOSS_MS) ||
                 now - stateStartedMs >= APPROACH_MAX_MS) {
-                cooldownUntilMs = now + WEIGHT_COOLDOWN_MS;
-                weightVotes = 0;
-                set_state(State::Forward, "Weight pass complete; resuming exploration");
+                finish_weight_attempt(now,
+                    "Weight pass complete; resuming exploration");
             }
         } else if (state == State::AvoidTurn) {
             const bool pointEvidence = valid_range("tof_xshut7") ||
@@ -420,10 +450,12 @@ void exploration_mode_update() {
                     clearVotes = 0;
                 }
             }
-            if ((now - stateStartedMs >= AVOID_MIN_TURN_MS &&
-                 clearVotes >= CLEAR_CONFIRM_FRAMES) ||
-                now - stateStartedMs >= AVOID_MAX_TURN_MS) {
+            if (now - stateStartedMs >= AVOID_MIN_TURN_MS &&
+                clearVotes >= CLEAR_CONFIRM_FRAMES) {
                 finish_avoidance(now);
+            } else if (now - stateStartedMs >= AVOID_MAX_TURN_MS) {
+                exploration_mode_stop("Stopped: front stayed blocked after avoidance turn");
+                return;
             }
         }
     }
@@ -431,6 +463,7 @@ void exploration_mode_update() {
     // The actuator watchdogs remain enabled, so refresh both commanded loads
     // while this autonomous state machine owns the robot.
     drum_control_set_percent(DRUM_LEFT_PERCENT, DRUM_RIGHT_PERCENT);
+    magnet_control_set(true);
     switch (state) {
         case State::Forward:
         case State::WeightApproach:
@@ -441,11 +474,12 @@ void exploration_mode_update() {
                                       -turnDirection * TURN_PERCENT);
             break;
         case State::WeightAlign: {
-            const uint32_t phaseMs = (now - stateStartedMs) % ALIGN_PERIOD_MS;
-            if (phaseMs < ALIGN_PULSE_MS) {
+            // One continuous correction is less jerky than stop/start spin
+            // pulses. Do not keep turning after the target leaves the view.
+            if (now - lastEvidenceMs <= RANGE_SAMPLE_PERIOD_MS * 2) {
                 const int direction = targetBearingDeg > 0.0f ? 1 : -1;
-                drive_control_set_percent(direction * TURN_PERCENT,
-                                          -direction * TURN_PERCENT);
+                drive_control_set_percent(direction * ALIGN_TURN_PERCENT,
+                                          -direction * ALIGN_TURN_PERCENT);
             } else {
                 drive_control_stop();
             }

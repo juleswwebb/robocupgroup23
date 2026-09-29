@@ -477,7 +477,7 @@ static void send_definitions() {
         doc["type"] = "command_definition";
         doc["name"] = commandName;
         doc["label"] = commandName;
-        doc["description"] = "Arena-free autonomous exploration. Start requires Debug Mode, at least 80% drive limit and valid forward range data; STOP always ends the run.";
+        doc["description"] = "Arena-free autonomous exploration with drum and electromagnet held on throughout the run. Start requires Debug Mode, at least 80% drive limit and valid forward range data; STOP ends all outputs.";
         doc["args"].to<JsonArray>();
         send(doc);
     }

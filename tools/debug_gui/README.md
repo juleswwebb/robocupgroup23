@@ -130,15 +130,20 @@ all return the drive outputs to neutral.
 The Dashboard also has a new **Autonomous Explore** control for arena-free
 testing. It starts robot-side exploration directly; no placed weights or map
 upload is involved. The Teensy drives at the configured straight trim (default
-100% left / 85% right), keeps the D28/D29 drum motors at -100% / -100%, and
+100% left / 85% right), keeps the D28/D29 drum motors at -100% / -100% and
+the D26 electromagnet on, and
 uses multi-pixel 8×8 TOF evidence to turn around a detected front obstacle.
 The inward-angled top/bottom VL53 pairs are used for three-sample weight
-detection, brief centering turns, and a forward pass through the target. The
+detection, steady centering turns, and a forward pass through the target. A
+lower return must be within 500 mm and at least 120 mm nearer than its recent
+background, while its upper partner does not see it close. The
 run requires Debug Mode, a drive limit of at least 80%, and valid 8×8 or
 straight-ahead range data; IMU/encoder calibration and Mission Planner setup
 are not prerequisites. STOP, Debug Mode exit, manual motor takeover, or a
-700 ms lost app keepalive neutralises the drive and drum. Avoidance turns at a
-coherent 8×8 return around 420 mm; this causes a turn, not a latched stop.
+700 ms lost app keepalive neutralises the drive and drum and switches off the
+magnet. Avoidance turns at a coherent 8×8 return around 420 mm; the robot keeps
+turning until the front is clear for two fresh frames. If it cannot clear the
+front after five seconds, it stops instead of driving into the obstruction.
 Hardware behavior is untested, so begin supervised in a clear area.
 
 The separate **Mission Planner** tab follows Group 7's newer pre-laid arena

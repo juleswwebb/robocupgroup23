@@ -39,10 +39,12 @@ class DriveControlTests(unittest.TestCase):
             recorder=SimpleNamespace(record_command=lambda *_args: None),
             add_log=lambda *_args: None,
             _update_exploration_controls=lambda: None,
+            _update_magnet_controls=lambda: None,
         )
         RobotDebugGUI._start_exploration(gui)
         self.assertEqual(sent, [(("explore_start",), {})])
         self.assertTrue(gui.explore_requested)
+        self.assertFalse(gui.magnet_operator_latched)
         self.assertEqual([item[0] for item in actions], ["mission", "keyboard", "drum"])
 
     def test_explore_keepalive_is_refreshed_over_the_connected_link(self):
@@ -189,6 +191,7 @@ class DriveControlTests(unittest.TestCase):
         off_requests = []
         gui = SimpleNamespace(
             magnet_is_on=True,
+            magnet_operator_latched=True,
             _magnet_controls_available=lambda: True,
             last_telemetry_monotonic=time.monotonic(),
             magnet_status_label=object(),
@@ -206,6 +209,18 @@ class DriveControlTests(unittest.TestCase):
             RobotDebugGUI._send_magnet_keepalive(gui)
         self.assertEqual(len(sent), 1)
         self.assertEqual(off_requests, [(False, "OFF · TELEMETRY LOST")])
+
+    def test_autonomous_magnet_report_does_not_latch_manual_keepalive(self):
+        sent = []
+        gui = SimpleNamespace(
+            magnet_is_on=True,
+            magnet_operator_latched=False,
+            bluetooth=SimpleNamespace(
+                send_command=lambda *args, **kwargs: sent.append((args, kwargs))
+            ),
+        )
+        RobotDebugGUI._send_magnet_keepalive(gui)
+        self.assertEqual(sent, [])
 
 
 if __name__ == "__main__":

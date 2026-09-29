@@ -4,21 +4,26 @@
 Start Autonomous Run / Stop Run control; no arena drawing, weight placement,
 route upload, encoder odometry or calibrated IMU is required. The Teensy drives
 straight at 100% left / 85% right (subject to the existing drive limit), runs
-the D28/D29 drum outputs continuously at -100% / -100%, and uses coherent
-neighbouring 8x8 zones over three distinct frames to initiate an avoidance
-turn. It picks a clearer side using the side ultrasonics when available and
+the D28/D29 drum outputs continuously at -100% / -100%, and holds the D26
+electromagnet on. Coherent neighbouring 8x8 zones over three distinct frames
+initiate an avoidance turn. It picks a clearer side using the side ultrasonics
+when available and
 otherwise the array's left/right field or an alternating turn. The front
 angled VL53 pairs XSHUT6/5 (left) and XSHUT3/4 (right) look for a lower sensor
-return at least 150 mm nearer than its upper partner for three samples; the
-robot then makes short turns to center the estimated bearing and drives through
-the target with the drum still running. Exploration reports phase, sensor
+return within 500 mm, at least 120 mm closer than its recent background, and
+at least 150 mm nearer than its upper partner for three samples; the robot
+then makes a steady centering turn and drives through the target with the drum
+still running. Exploration reports phase, sensor
 ranges, weight attempts and avoidance turns in live telemetry. Debug Mode is
 required, drive limit must be at least 80%, and valid 8x8 or straight-ahead TOF
 data must be present at start. Emergency STOP, Debug Mode exit, manual drive or
-drum takeover, and loss of the GUI keepalive stop both drive and drum. Avoidance
-turning is not a STOP threshold; the array turns at a coherent 420 mm detection
-and continues. Hardware behavior is not yet tested; first run in a clear,
-supervised area with STOP accessible.
+drum takeover, and loss of the GUI keepalive stop drive, drum and magnet.
+The 2026-09-30 04:08 recording showed eight false weight-centering episodes
+and avoidance turns timing out while the front was still 160-290 mm away.
+Weight candidates now need a new near-field return and a persistent side;
+front obstacle evidence takes priority. Avoidance keeps turning until two
+fresh clear readings (or stops after five seconds if no clear path appears).
+Firmware changes still need a hardware run with STOP accessible.
 
 2026-09-30 weight-site centering and resume checkpoint: Mission Planner weight
 search points require repeated top/bottom VL53 evidence. The Teensy projects the
