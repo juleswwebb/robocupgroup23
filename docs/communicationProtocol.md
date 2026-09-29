@@ -595,6 +595,18 @@ if (command == "drive_test")
 
 This is how GUI buttons ultimately control robot functions.
 
+The electromagnet uses the `magnet_set` command. `enabled: true` is accepted
+only in Debug Mode; `enabled: false` is always accepted. The GUI sends periodic
+ON keepalives while its switch is latched and live telemetry is arriving. The
+firmware turns the output off at boot, on STOP, on Debug Mode exit, or after
+1 second without a keepalive. The D26 output is only for an external driver
+logic input; the electromagnet coil must have a separate, properly rated power
+driver.
+
+```json
+{"type":"command","command":"magnet_set","enabled":true}
+```
+
 ---
 
 # 12. Command Definitions

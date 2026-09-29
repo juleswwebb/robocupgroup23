@@ -53,6 +53,11 @@
 #define DRUM_COMMAND_TIMEOUT_MS 300
 #define DRUM_TEST_MAX_PERCENT 100
 
+// Electromagnet driver input. The coil must use its own supply through a
+// MOSFET/relay driver; this pin only drives the driver's logic input.
+#define MAGNET_PIN 26
+#define MAGNET_COMMAND_TIMEOUT_MS 1000
+
 // The six point VL53 sensors and their SX1509 are on I2C bus 0
 // (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire

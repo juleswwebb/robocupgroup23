@@ -7,6 +7,7 @@
 #include "ServoControl.h"
 #include "DriveControl.h"
 #include "DrumControl.h"
+#include "MagnetControl.h"
 #include "Navigation.h"
 #include "Console.h"
 #include "sensor_config.h"
@@ -126,7 +127,9 @@ static void send_state() {
     JsonDocument doc;
     doc["type"] = "state";
     doc["debug_mode"] = debugMode;
-    doc["stopped"] = (!drive_control_is_active() && !drum_control_is_active());
+    doc["stopped"] = (!drive_control_is_active() && !drum_control_is_active()
+                      && !magnet_control_is_on());
+    doc["magnet_on"] = magnet_control_is_on();
     doc["fault"] = false;
     doc["uptime_ms"] = millis();
     send(doc);
@@ -232,6 +235,7 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("drum.left_us", "Left drum pulse", "Drum", "us");
     send_telemetry_definition("drum.right_us", "Right drum pulse", "Drum", "us");
     send_telemetry_definition("drum.active", "Drum active", "Drum", "bool", false);
+    send_telemetry_definition("magnet.on", "Electromagnet energized", "Electromagnet", "bool", false);
     send_telemetry_definition("navigation.active", "Navigation active", "Navigation", "bool", false);
     send_telemetry_definition("navigation.state", "Navigation state", "Navigation", "state", false);
     send_telemetry_definition("navigation.stop_reason", "Navigation status detail", "Navigation", "text", false);
@@ -354,6 +358,19 @@ static void send_definitions() {
         right["name"] = "right"; right["label"] = "Right (%)";
         right["type"] = "int"; right["min"] = -100; right["max"] = 100;
         right["step"] = 5; right["default"] = 0;
+        send(doc);
+    }
+    {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
+        doc["name"] = "magnet_set";
+        doc["label"] = "Electromagnet";
+        doc["description"] = "Switch the D26 electromagnet driver. ON requires Debug Mode and a fresh app keepalive; STOP, Debug Mode exit, or a lost keepalive switches it OFF.";
+        JsonObject arg = doc["args"].to<JsonArray>().add<JsonObject>();
+        arg["name"] = "enabled";
+        arg["label"] = "Energized";
+        arg["type"] = "bool";
+        arg["default"] = false;
         send(doc);
     }
     {
@@ -562,6 +579,7 @@ void debug_protocol_send_telemetry() {
     data["drum.left_us"] = drum_control_left_us();
     data["drum.right_us"] = drum_control_right_us();
     data["drum.active"] = drum_control_is_active();
+    data["magnet.on"] = magnet_control_is_on();
     data["navigation.active"] = navigation_is_active();
     data["navigation.state"] = navigation_get_state_name();
     data["navigation.stop_reason"] = navigation_get_stop_reason();
@@ -607,8 +625,9 @@ static void handle_command(JsonDocument& doc) {
         // Deliberately always allowed - a stop must never be gated.
         drive_control_stop();
         drum_control_stop();
+        magnet_control_off();
         navigation_stop("Emergency stop");
-        debug_protocol_log("WARNING", "STOP: all actuator outputs set to neutral");
+        debug_protocol_log("WARNING", "STOP: actuator outputs set to safe state");
         send_state();
 
     } else if (strcmp(command, "set_debug_mode") == 0) {
@@ -618,6 +637,7 @@ static void handle_command(JsonDocument& doc) {
         if (!debugMode) {
             drive_control_stop();
             drum_control_stop();
+            magnet_control_off();
             navigation_stop("Debug mode disabled");
         }
         send_state();
@@ -641,6 +661,16 @@ static void handle_command(JsonDocument& doc) {
         const int left = doc["left"] | 0;
         const int right = doc["right"] | 0;
         drum_control_set_percent(left, right);
+
+    } else if (strcmp(command, "magnet_set") == 0) {
+        const bool enabled = doc["enabled"] | false;
+        // An OFF command is always accepted; energizing the coil requires
+        // Debug Mode. The GUI repeats ON while its connection is healthy.
+        if (enabled && !debugMode) {
+            send_error("magnet_set ON requires debug mode");
+            return;
+        }
+        magnet_control_set(enabled);
 
     } else if (strcmp(command, "navigation_set") == 0) {
         const bool enabled = doc["enabled"] | false;

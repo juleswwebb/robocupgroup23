@@ -31,6 +31,7 @@
 #include "ServoControl.h"
 #include "DriveControl.h"
 #include "DrumControl.h"
+#include "MagnetControl.h"
 #include "Console.h"
 #include "DebugProtocol.h"
 #include "sensor_config.h"
@@ -176,6 +177,7 @@ Task tUpdate_debug_protocol(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXE
 // if the GUI connection or a keyboard event disappears.
 Task tUpdate_drive_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drive_control_update);
 Task tUpdate_drum_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drum_control_update);
+Task tUpdate_magnet_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &magnet_control_update);
 Task tUpdate_navigation(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &navigation_update);
 
 Scheduler taskManager;
@@ -317,6 +319,7 @@ void setup() {
   encoders_init();         // brings up the encoder pins + interrupts
   drive_control_init();    // D7/D8 drive ESCs; starts safely at neutral
   drum_control_init();     // D28/D29 drum outputs, neutral at boot
+  magnet_control_init();   // D26 magnet driver output, safely OFF at boot
   navigation_init();       // autonomous navigation remains disabled at boot
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
@@ -364,6 +367,7 @@ void task_init() {
   // be serviced before entering that driver.
   taskManager.addTask(tUpdate_drive_control);
   taskManager.addTask(tUpdate_drum_control);
+  taskManager.addTask(tUpdate_magnet_control);
   taskManager.addTask(tUpdate_console);
   taskManager.addTask(tUpdate_debug_protocol);
   taskManager.addTask(tUpdate_navigation);

@@ -75,6 +75,29 @@ class DriveControlTests(unittest.TestCase):
         self.assertEqual(sent, [(("drive_set",), {"left": 85, "right": 100})])
         self.assertEqual(drum_stopped, [])
 
+    def test_magnet_keepalive_requires_fresh_telemetry(self):
+        sent = []
+        off_requests = []
+        gui = SimpleNamespace(
+            magnet_is_on=True,
+            _magnet_controls_available=lambda: True,
+            last_telemetry_monotonic=time.monotonic(),
+            magnet_status_label=object(),
+            bluetooth=SimpleNamespace(
+                send_command=lambda *args, **kwargs: sent.append((args, kwargs))
+            ),
+            _request_magnet=lambda enabled, status: off_requests.append((enabled, status)),
+        )
+
+        with patch("DebugGUI.theme.set_pill_state"):
+            RobotDebugGUI._send_magnet_keepalive(gui)
+            self.assertEqual(sent, [(("magnet_set",), {"enabled": True})])
+
+            gui.last_telemetry_monotonic -= 3.0
+            RobotDebugGUI._send_magnet_keepalive(gui)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(off_requests, [(False, "OFF · TELEMETRY LOST")])
+
 
 if __name__ == "__main__":
     unittest.main()

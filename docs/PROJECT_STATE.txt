@@ -245,6 +245,7 @@ The wrappers cache values. Other code should use the facade getters rather than 
 | Main drive left | D7 / RX2 | PWM output is direction-reversed in configuration so positive app command means physical forward |
 | Main drive right | D8 / TX2 | PWM output is direction-reversed in configuration so positive app command means physical forward |
 | Drum motor drivers | D28 left, D29 right | Independent servo-style PWM outputs; +/-100% range, 300 ms command timeout |
+| Electromagnet driver | D26 | Active-high logic output only; external MOSFET/relay driver required, OFF at boot/STOP/debug exit, 1 s app keepalive timeout |
 
 D28 and D29 are also the `Serial7` pins. The old single-servo test on these pins is retired; Serial7 cannot be used while the drum outputs are active. Left/right pin assignment reflects the configured mapping, but direction still needs a physical test.
 
@@ -287,6 +288,7 @@ Status terms:
 | Inductive proximity | Active-low debounce, detection state and count implemented | **Verified after wiring was corrected** | `InductiveSensor.cpp`, `Inductive.cpp` |
 | 2 x quadrature encoder | Full 4x A/B interrupt decoder, internal pull-ups and raw-input diagnostics | **Counts worked after the CPU board was replaced**, per operator; D2–D5. Distance scale, sign and wheel track still need measured calibration | `EncoderSensor.cpp`, `Encoders.cpp` |
 | 2 x drum/reel motors | Servo-style signal outputs, Debug Mode gate, +/-100% range and 300 ms watchdog | **Wired per operator:** D28 left, D29 right; direction and driver pulse requirements remain unverified | `DrumControl.cpp`, `sensor_config.h` |
+| Electromagnet | D26 active-high driver output, GUI toggle, Debug Mode gate and 1 s keepalive failsafe | **Implemented in firmware/app; hardware not yet tested.** Never connect the coil directly to the Teensy GPIO. | `MagnetControl.cpp`, `DebugProtocol.cpp`, `DebugGUI.py` |
 | One servo or continuous-rotation servo | Previous test controls retired | D28/D29 are now reserved exclusively for drum motors | `ServoControl.cpp` |
 | Main drive motors | Left/right PWM, keyboard controls, pulse/command telemetry, app controls and watchdog | **Coded and build-verified:** must be tested with wheels safely off the ground | `DriveControl.cpp`, `DebugProtocol.cpp`, `DebugGUI.py` |
 

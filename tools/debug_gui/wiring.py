@@ -101,6 +101,7 @@ KINDS: dict[str, DeviceKind] = {
         DeviceKind("servo", "Servo", "pwm"),
         DeviceKind("motor", "Drive motor / ESC", "drive"),
         DeviceKind("drum", "Drum motor / PPM driver", "drum"),
+        DeviceKind("magnet", "Electromagnet driver", "magnet"),
         DeviceKind("other", "Other", None),
     )
 }
@@ -116,6 +117,7 @@ PORT_TYPE_LABELS = {
     "pwm": "PWM",
     "drive": "Drive ESC PWM",
     "drum": "Drum PPM outputs",
+    "magnet": "Electromagnet driver",
 }
 
 
@@ -197,6 +199,9 @@ def _build_ports() -> list[Port]:
         Port("drum_right", "Right drum driver  ·  D29", "drum",
              signals=(("drum.right_percent", "Command"), ("drum.right_us", "Pulse")),
              expects="drum", pins=("D29",)),
+        Port("magnet_driver", "Electromagnet driver input  ·  D26", "magnet",
+             signals=(("magnet.on", "Energized"),),
+             expects="magnet", pins=("D26",)),
     ))
 
     # A0-A13 are D14-D27 on the Teensy 4.0.
@@ -283,6 +288,7 @@ def default_devices() -> list[Device]:
         Device("Right drive ESC", "motor", "drive_right"),
         Device("Left drum", "drum", "drum_left"),
         Device("Right drum", "drum", "drum_right"),
+        Device("Electromagnet", "magnet", "magnet_driver"),
     ]
     devices += [
         Device("IMU", "imu", "wire1_0x28"),

@@ -335,8 +335,10 @@ class RobotDebugGUI(QMainWindow):
         self.drive_keys: set[int] = set()
         self.drive_command_available = False
         self.drum_command_available = False
+        self.magnet_command_available = False
         self.drum_held = False
         self.drum_latched = False
+        self.magnet_is_on = False
         self.robot_debug_mode = False
         self.route_follower = None
         self.route_last_frame_monotonic = None
@@ -418,6 +420,9 @@ class RobotDebugGUI(QMainWindow):
         self.drum_keepalive_timer = QTimer(self)
         self.drum_keepalive_timer.timeout.connect(self._send_drum_command)
         self.drum_keepalive_timer.start(100)
+        self.magnet_keepalive_timer = QTimer(self)
+        self.magnet_keepalive_timer.timeout.connect(self._send_magnet_keepalive)
+        self.magnet_keepalive_timer.start(100)
         self.route_timer = QTimer(self)
         self.route_timer.timeout.connect(self._mission_route_step)
         self.route_timer.start(100)
@@ -1132,6 +1137,29 @@ class RobotDebugGUI(QMainWindow):
         drum_layout.addWidget(self.drum_status_label)
         command_panel_layout.addWidget(drum_group)
 
+        magnet_group = QGroupBox("Electromagnet · D26")
+        magnet_layout = QVBoxLayout(magnet_group)
+        magnet_hint = QLabel(
+            "Switches the external driver input only. Power the coil through its "
+            "MOSFET/relay driver, never directly from the Teensy. Requires Debug "
+            "Mode; STOP, Debug Mode exit, disconnect, or lost telemetry turns it off."
+        )
+        magnet_hint.setWordWrap(True)
+        magnet_hint.setObjectName("hint")
+        magnet_layout.addWidget(magnet_hint)
+        self.magnet_button = QPushButton("ELECTROMAGNET · OFF")
+        self.magnet_button.setCheckable(True)
+        self.magnet_button.setObjectName("primaryButton")
+        self.magnet_button.setMinimumHeight(42)
+        self.magnet_button.setEnabled(False)
+        self.magnet_button.toggled.connect(self._on_magnet_toggled)
+        magnet_layout.addWidget(self.magnet_button)
+        self.magnet_status_label = QLabel("WAITING FOR DEBUG MODE / MAGNET CONTROL")
+        self.magnet_status_label.setObjectName("statusPill")
+        theme.set_pill_state(self.magnet_status_label, "")
+        magnet_layout.addWidget(self.magnet_status_label)
+        command_panel_layout.addWidget(magnet_group)
+
         self.dashboard_command_container = QWidget()
 
         self.dashboard_command_layout = QVBoxLayout(
@@ -1253,6 +1281,77 @@ class RobotDebugGUI(QMainWindow):
         if self._drum_controls_available():
             self.drum_status_label.setText("STOPPED · HOLD OR SWITCH RUN")
             theme.set_pill_state(self.drum_status_label, "ok")
+
+    def _magnet_controls_available(self) -> bool:
+        return (self.bluetooth.is_connected() and self.robot_debug_mode
+                and self.magnet_command_available)
+
+    def _update_magnet_controls(self):
+        available = self._magnet_controls_available()
+        self.magnet_button.setEnabled(available)
+        if not available and self.magnet_is_on:
+            # The firmware independently drops the output on Debug Mode exit;
+            # send an explicit OFF too whenever the link is still available.
+            self._request_magnet(False, "OFF · CONTROL UNAVAILABLE")
+        elif not available:
+            self.magnet_status_label.setText("WAITING FOR DEBUG MODE / MAGNET CONTROL")
+            theme.set_pill_state(self.magnet_status_label, "")
+
+    def _set_magnet_visual(self, enabled: bool, status: str | None = None,
+                           pill_state: str = "ok"):
+        self.magnet_is_on = enabled
+        self.magnet_button.blockSignals(True)
+        self.magnet_button.setChecked(enabled)
+        self.magnet_button.setText(
+            "ELECTROMAGNET · ON — CLICK TO RELEASE" if enabled
+            else "ELECTROMAGNET · OFF"
+        )
+        self.magnet_button.setObjectName("danger" if enabled else "primaryButton")
+        self.magnet_button.style().unpolish(self.magnet_button)
+        self.magnet_button.style().polish(self.magnet_button)
+        self.magnet_button.blockSignals(False)
+        self.magnet_status_label.setText(
+            status or ("ON · D26 DRIVER ACTIVE" if enabled else "OFF · D26")
+        )
+        theme.set_pill_state(self.magnet_status_label, pill_state)
+
+    def _request_magnet(self, enabled: bool, status: str | None = None):
+        if enabled and not self._magnet_controls_available():
+            self._set_magnet_visual(False, "ENABLE DEBUG MODE / MAGNET CONTROL", "")
+            return
+        if self.bluetooth.is_connected():
+            arguments = {"enabled": enabled}
+            self.recorder.record_command("magnet_set", arguments)
+            self.bluetooth.send_command("magnet_set", **arguments)
+        self._set_magnet_visual(
+            enabled,
+            status or ("ON · WAITING FOR ROBOT CONFIRMATION" if enabled else "OFF · D26"),
+            "busy" if enabled else "ok",
+        )
+
+    def _on_magnet_toggled(self, enabled: bool):
+        self._request_magnet(enabled)
+
+    def _send_magnet_keepalive(self):
+        if not self.magnet_is_on:
+            return
+        if not self._magnet_controls_available():
+            self._set_magnet_visual(False, "OFF · CONTROL UNAVAILABLE", "bad")
+            return
+        if (self.last_telemetry_monotonic is None
+                or time.monotonic() - self.last_telemetry_monotonic > 2.0):
+            self._request_magnet(False, "OFF · TELEMETRY LOST")
+            theme.set_pill_state(self.magnet_status_label, "bad")
+            return
+        # Refresh the firmware's independent 1 s safety timeout while the
+        # operator's switch is latched ON and the link is demonstrably alive.
+        self.bluetooth.send_command("magnet_set", enabled=True)
+
+    def _magnet_reported_state(self, enabled: bool):
+        if enabled == self.magnet_is_on:
+            return
+        reason = "ON · ROBOT CONFIRMED" if enabled else "OFF · ROBOT REPORTED OFF"
+        self._set_magnet_visual(enabled, reason, "busy" if enabled else "ok")
 
     def focusOutEvent(self, event):
         if self.drum_held:
@@ -2707,6 +2806,7 @@ class RobotDebugGUI(QMainWindow):
             )
             self._update_drive_controls()
             self._update_drum_controls()
+            self._update_magnet_controls()
 
         else:
             self.connected_since_monotonic = None
@@ -2716,9 +2816,12 @@ class RobotDebugGUI(QMainWindow):
             self.robot_debug_mode = False
             self._stop_drum_hold()
             self.drum_command_available = False
+            self.magnet_command_available = False
             self._set_drive_armed(False)
             self._update_drive_controls()
             self._update_drum_controls()
+            self._update_magnet_controls()
+            self._set_magnet_visual(False, "OFF · DISCONNECTED (FIRMWARE FAILSAFE)", "bad")
             if self.recorder.is_recording:
                 self.stop_recording()
 
@@ -2857,6 +2960,8 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry[
             name
         ] = value
+        if name == "magnet.on" and isinstance(value, bool):
+            self._magnet_reported_state(value)
         # ArenaView groups all signals sharing one robot timestamp into a
         # coherent pose/range frame. Feed it before matrix zones are hidden
         # from the large dashboard table below.
@@ -3337,6 +3442,11 @@ class RobotDebugGUI(QMainWindow):
         if name == "drum_set":
             self.drum_command_available = True
             self._update_drum_controls()
+        if name == "magnet_set":
+            self.magnet_command_available = True
+            self._update_magnet_controls()
+            # A dedicated, safety-aware switch is provided on the dashboard.
+            return
 
         if name not in self.command_widgets:
             command_widget = CommandWidget(
@@ -3384,6 +3494,11 @@ class RobotDebugGUI(QMainWindow):
             name == "stop" or arguments.get("enabled") is False
         ):
             self._stop_drum_hold()
+            self._set_magnet_visual(
+                False,
+                "OFF · STOPPED" if name == "stop" else "OFF · DEBUG MODE EXITED",
+                "ok",
+            )
         self.recorder.record_command(
             name,
             arguments,
@@ -3494,6 +3609,13 @@ class RobotDebugGUI(QMainWindow):
                 self._stop_mission_route("Debug Mode exited", send_stop=False)
             self._update_drive_controls()
             self._update_drum_controls()
+            if not self.robot_debug_mode and self.magnet_is_on:
+                self._set_magnet_visual(False, "OFF · DEBUG MODE EXITED", "ok")
+            self._update_magnet_controls()
+
+        magnet_state = state.get("magnet_on")
+        if isinstance(magnet_state, bool):
+            self._magnet_reported_state(magnet_state)
 
         if debug_enabled is True:
             self.statusBar().showMessage(
@@ -3534,6 +3656,8 @@ class RobotDebugGUI(QMainWindow):
         self._set_drive_armed(False)
         self._stop_mission_route("App closing")
         self._stop_drum_hold()
+        if self.magnet_is_on:
+            self._request_magnet(False, "OFF · APP CLOSING")
         self.bluetooth.disconnect_port()
 
         event.accept()
