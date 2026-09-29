@@ -59,6 +59,9 @@ unsigned short distance_sensors_8x8_min_mm();
 // Copy the latest complete 8x8 frame into buf (64 row-major uint16 values).
 // Returns false until a frame has been received successfully.
 bool distance_sensors_get_8x8_grid(unsigned short* buf);
+// Timestamp (millis) of the most recently completed 8x8 frame. Zero means no
+// complete frame has arrived yet; useful to debounce by distinct frames.
+uint32_t distance_sensors_8x8_last_success_ms();
 
 // Startup/health diagnostics for the six active point VL53 channels, in registration
 // order. This keeps callers from guessing/casting L0X channels as L1X.

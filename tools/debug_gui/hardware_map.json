@@ -74,7 +74,7 @@
     {
       "name": "IMU",
       "kind": "imu",
-      "port": "wire1_0x28"
+      "port": "wire0_0x28"
     },
     {
       "name": "Inductive sensor",

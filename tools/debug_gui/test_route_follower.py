@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from mission_layout import MissionLayout
 from route_follower import (RouteFollower, local_to_mission,
                             PointTofStopGuard,
-                            confirm_obstacle_points, matrix_obstacle_points,
+                            confirm_obstacle_points, filter_uncorroborated_front_tofs,
+                            matrix_confirms_near_front, matrix_obstacle_points,
                             mission_to_local, point_tof_obstacle_points,
                             prepare_route)
 from DebugGUI import RobotDebugGUI
@@ -16,6 +17,28 @@ from arena_view import ArenaModel
 
 
 class RouteFollowerTests(unittest.TestCase):
+    def test_front_top_tofs_need_a_coherent_upper_array_pair_for_emergency_vote(self):
+        point_readings = {"xshut7": 12, "xshut8": 18, "xshut5": 10}
+        floor_only = {"tof.array.r5c3": 12, "tof.array.r6c3": 18}
+        self.assertFalse(matrix_confirms_near_front(floor_only))
+        self.assertEqual(
+            filter_uncorroborated_front_tofs(point_readings, floor_only),
+            {"xshut5": 10},
+        )
+
+        isolated_pixel = {"tof.array.r2c3": 110}
+        self.assertFalse(matrix_confirms_near_front(isolated_pixel))
+
+        coherent_pair = {"tof.array.r2c3": 110, "tof.array.r2c4": 145}
+        self.assertTrue(matrix_confirms_near_front(coherent_pair))
+        self.assertEqual(
+            filter_uncorroborated_front_tofs(point_readings, coherent_pair),
+            point_readings,
+        )
+
+        disagreeing_pair = {"tof.array.r2c3": 55, "tof.array.r2c4": 400}
+        self.assertFalse(matrix_confirms_near_front(disagreeing_pair))
+
     def test_point_tof_guard_holds_first_sample_and_requires_persistent_hit(self):
         guard = PointTofStopGuard(required_frames=2)
         self.assertEqual(guard.observe(("Front_Top_Right", 288), 1, threshold_mm=300), "pending")
@@ -26,6 +49,20 @@ class RouteFollowerTests(unittest.TestCase):
         self.assertEqual(guard.observe(("Front_Top_Right", 288), 5, threshold_mm=300), "confirmed")
         self.assertEqual(guard.observe(("Front_Top_Right", 288), 5, threshold_mm=300), "confirmed")
         self.assertEqual(guard.observe(("Front_Top_Right", 0), 6, threshold_mm=0), "clear")
+
+    def test_obstacle_cutoff_is_strictly_below_50_mm(self):
+        guard = PointTofStopGuard(required_frames=2)
+        self.assertEqual(guard.observe({"xshut4": 50}, 1), "clear")
+        self.assertEqual(guard.observe({"xshut4": 49}, 2), "pending")
+        self.assertEqual(guard.observe({"xshut4": 50}, 3), "pending")
+        self.assertEqual(guard.observe({"xshut4": 50}, 4), "clear")
+        self.assertEqual(guard.observe({"xshut4": 49}, 5), "pending")
+        self.assertEqual(guard.observe({"xshut4": 49}, 6), "confirmed")
+
+        clear_follower = RouteFollower([(0, 1000)])
+        self.assertNotEqual(clear_follower.step(0, 0, 0, 50, 0).state, "FAULT")
+        close_follower = RouteFollower([(0, 1000)])
+        self.assertEqual(close_follower.step(0, 0, 0, 49, 0).state, "FAULT")
 
     def test_point_tof_hold_requires_same_sensor_to_clear(self):
         guard = PointTofStopGuard(required_frames=2)
@@ -88,7 +125,7 @@ class RouteFollowerTests(unittest.TestCase):
         )
         fake.route_last_obstacle_frame = fake.route_last_frame_monotonic
         RobotDebugGUI._mission_route_step(fake)
-        self.assertEqual(sent[-1], (("drive_set",), {"left": 85, "right": 100}))
+        self.assertEqual(sent[-1], (("drive_set",), {"left": 100, "right": 85}))
         fake.route_last_frame_monotonic = time.monotonic() - 2
         RobotDebugGUI._mission_route_step(fake)
         self.assertIn("Telemetry stale", stopped[-1])
@@ -163,6 +200,14 @@ class RouteFollowerTests(unittest.TestCase):
             frame, arena, layout, excluded_keys={"xshut8"},
         )
         self.assertEqual(excluded, [])
+        boundary = point_tof_obstacle_points(
+            {"tof.xshut8": 50}, arena, layout,
+        )
+        self.assertEqual(boundary, [])
+        just_inside = point_tof_obstacle_points(
+            {"tof.xshut8": 49}, arena, layout,
+        )
+        self.assertEqual(len(just_inside), 1)
 
     def test_all_six_wired_point_tofs_reach_navigation_by_signal_id(self):
         arena = ArenaModel()
@@ -302,6 +347,9 @@ class RouteFollowerTests(unittest.TestCase):
         points = matrix_obstacle_points({"tof.array.r1c3": 20}, arena, layout)
         self.assertEqual(len(points), 1)
         self.assertTrue(all(math.isfinite(value) for value in points[0]))
+        self.assertEqual(matrix_obstacle_points({"tof.array.r1c3": 50}, arena, layout), [])
+        self.assertEqual(len(matrix_obstacle_points(
+            {"tof.array.r1c3": 49}, arena, layout)), 1)
 
     def test_8x8_obstacle_off_path_does_not_force_detour(self):
         layout = MissionLayout()
@@ -342,7 +390,7 @@ class RouteFollowerTests(unittest.TestCase):
         follower = RouteFollower([(0, 1000)])
         forward = follower.step(0, 0, math.pi/2, 1200, 0)
         self.assertEqual(forward.state, "FORWARD")
-        self.assertEqual((forward.left, forward.right), (85, 100))
+        self.assertEqual((forward.left, forward.right), (100, 85))
         follower.step(0, 320, math.pi/2, 1200, 1)
         follower.step(0, 640, math.pi/2, 1200, 2)
         done = follower.step(0, 960, math.pi/2, 1200, 3)
@@ -354,14 +402,14 @@ class RouteFollowerTests(unittest.TestCase):
         self.assertGreater(right.left, 0)
         self.assertLess(right.right, 0)
 
-    def test_20mm_threshold_only_hard_stops_at_20mm_or_closer(self):
+    def test_50mm_threshold_only_hard_stops_below_50mm(self):
         at_detour_range = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 430, 0)
         self.assertFalse(at_detour_range.fault)
-        under_threshold = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 19, 0)
-        at_threshold = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 20, 0)
-        above_threshold = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 21, 0)
+        under_threshold = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 49, 0)
+        at_threshold = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 50, 0)
+        above_threshold = RouteFollower([(0, 1000)]).step(0, 0, math.pi/2, 51, 0)
         self.assertTrue(under_threshold.fault)
-        self.assertTrue(at_threshold.fault)
+        self.assertFalse(at_threshold.fault)
         self.assertFalse(above_threshold.fault)
 
     def test_route_turns_use_hysteresis_instead_of_chattering_at_one_angle(self):
@@ -496,7 +544,7 @@ class RouteFollowerTests(unittest.TestCase):
         )
         fake.route_last_obstacle_frame = None
         RobotDebugGUI._mission_route_step(fake)
-        self.assertEqual(sent, [(("drive_set",), {"left": 85, "right": 100})])
+        self.assertEqual(sent, [(("drive_set",), {"left": 100, "right": 85})])
 
     def test_close_point_tof_hold_needs_same_sensor_clearance_to_resume(self):
         sent = []

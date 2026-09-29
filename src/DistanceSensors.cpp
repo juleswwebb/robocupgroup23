@@ -216,6 +216,10 @@ bool distance_sensors_get_8x8_grid(unsigned short* buf) {
     return true;
 }
 
+uint32_t distance_sensors_8x8_last_success_ms() {
+    return tof8x8.lastSuccessfulReadMs();
+}
+
 void distance_sensors_print_8x8_grid() {
     uint16_t grid[MATRIX_LIDAR_GRID_SIZE];
     tof8x8.getGrid(grid);

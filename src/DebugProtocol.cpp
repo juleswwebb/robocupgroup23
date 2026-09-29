@@ -9,6 +9,7 @@
 #include "DrumControl.h"
 #include "MagnetControl.h"
 #include "Navigation.h"
+#include "ExplorationMode.h"
 #include "MissionNavigation.h"
 #include "Console.h"
 #include "sensor_config.h"
@@ -271,6 +272,19 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("navigation.left_mm", "Left clearance", "Navigation", "mm");
     send_telemetry_definition("navigation.right_mm", "Right clearance", "Navigation", "mm");
     send_telemetry_definition("navigation.target_heading", "Turn target", "Navigation", "deg");
+    send_telemetry_definition("explore.active", "Autonomous explore active", "Autonomous explore", "bool", false);
+    send_telemetry_definition("explore.state", "Autonomous explore phase", "Autonomous explore", "state", false);
+    send_telemetry_definition("explore.reason", "Autonomous explore status", "Autonomous explore", "text", false);
+    send_telemetry_definition("explore.front_mm", "Coherent forward obstacle range", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.left_mm", "Left ultrasonic range", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.right_mm", "Right ultrasonic range", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.left_top_mm", "Left upper weight ToF", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.left_bottom_mm", "Left lower weight ToF", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.right_top_mm", "Right upper weight ToF", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.right_bottom_mm", "Right lower weight ToF", "Autonomous explore", "mm");
+    send_telemetry_definition("explore.target_bearing_deg", "Detected weight bearing", "Autonomous explore", "deg");
+    send_telemetry_definition("explore.weights_seen", "Weight acquisition attempts", "Autonomous explore", "count", false);
+    send_telemetry_definition("explore.turns", "Obstacle avoidance turns", "Autonomous explore", "count", false);
     send_telemetry_definition("mission.ready", "Mission uploaded", "Mission", "bool", false);
     send_telemetry_definition("mission.active", "Robot-side mission active", "Mission", "bool", false);
     send_telemetry_definition("mission.state", "Mission phase", "Mission", "state", false);
@@ -280,9 +294,14 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("mission.pose_x_mm", "Mission X", "Mission", "mm");
     send_telemetry_definition("mission.pose_y_mm", "Mission Y", "Mission", "mm");
     send_telemetry_definition("mission.heading_deg", "Mission heading", "Mission", "deg");
-    send_telemetry_definition("mission.front_mm", "Mission forward clearance", "Mission", "mm");
-    send_telemetry_definition("mission.left_mm", "Mission left clearance", "Mission", "mm");
-    send_telemetry_definition("mission.right_mm", "Mission right clearance", "Mission", "mm");
+    send_telemetry_definition("mission.front_mm", "Nearest raw forward range", "Mission", "mm");
+    send_telemetry_definition("mission.left_mm", "Raw left ultrasonic range", "Mission", "mm");
+    send_telemetry_definition("mission.right_mm", "Raw right ultrasonic range", "Mission", "mm");
+    send_telemetry_definition("mission.front_edge_mm", "Forward hit to robot footprint", "Mission", "mm");
+    send_telemetry_definition("mission.left_edge_mm", "Left hit to robot footprint", "Mission", "mm");
+    send_telemetry_definition("mission.right_edge_mm", "Right hit to robot footprint", "Mission", "mm");
+    send_telemetry_definition("mission.nearest_edge_mm", "Nearest sensor hit to robot footprint", "Mission", "mm");
+    send_telemetry_definition("mission.nearest_sensor", "Sensor reporting nearest footprint hit", "Mission", "sensor", false);
     send_telemetry_definition("mission.detour_count", "Mission detours", "Mission", "count", false);
     send_telemetry_definition("bluetooth.active", "Bluetooth transport active", "Communications", "bool", false);
     send_telemetry_definition("bluetooth.rx_bytes", "Bluetooth raw bytes received", "Communications", "bytes");
@@ -451,6 +470,15 @@ static void send_definitions() {
         arg["label"] = "Enabled";
         arg["type"] = "bool";
         arg["default"] = false;
+        send(doc);
+    }
+    for (const char* commandName : {"explore_start", "explore_stop"}) {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
+        doc["name"] = commandName;
+        doc["label"] = commandName;
+        doc["description"] = "Arena-free autonomous exploration. Start requires Debug Mode, at least 80% drive limit and valid forward range data; STOP always ends the run.";
+        doc["args"].to<JsonArray>();
         send(doc);
     }
     // Mission upload is driven by the dedicated planner UI. These definitions
@@ -698,6 +726,26 @@ void debug_protocol_send_telemetry() {
     if (navigation_get_right_mm()) data["navigation.right_mm"] = navigation_get_right_mm();
     else data["navigation.right_mm"] = nullptr;
     data["navigation.target_heading"] = navigation_get_target_heading();
+    data["explore.active"] = exploration_mode_is_active();
+    data["explore.state"] = exploration_mode_state();
+    data["explore.reason"] = exploration_mode_reason();
+    if (exploration_mode_front_mm()) data["explore.front_mm"] = exploration_mode_front_mm();
+    else data["explore.front_mm"] = nullptr;
+    if (exploration_mode_left_mm()) data["explore.left_mm"] = exploration_mode_left_mm();
+    else data["explore.left_mm"] = nullptr;
+    if (exploration_mode_right_mm()) data["explore.right_mm"] = exploration_mode_right_mm();
+    else data["explore.right_mm"] = nullptr;
+    if (exploration_mode_left_top_mm()) data["explore.left_top_mm"] = exploration_mode_left_top_mm();
+    else data["explore.left_top_mm"] = nullptr;
+    if (exploration_mode_left_bottom_mm()) data["explore.left_bottom_mm"] = exploration_mode_left_bottom_mm();
+    else data["explore.left_bottom_mm"] = nullptr;
+    if (exploration_mode_right_top_mm()) data["explore.right_top_mm"] = exploration_mode_right_top_mm();
+    else data["explore.right_top_mm"] = nullptr;
+    if (exploration_mode_right_bottom_mm()) data["explore.right_bottom_mm"] = exploration_mode_right_bottom_mm();
+    else data["explore.right_bottom_mm"] = nullptr;
+    data["explore.target_bearing_deg"] = exploration_mode_target_bearing_deg();
+    data["explore.weights_seen"] = exploration_mode_weights_seen();
+    data["explore.turns"] = exploration_mode_turns();
     data["mission.ready"] = mission_is_ready();
     data["mission.active"] = mission_is_active();
     data["mission.state"] = mission_state();
@@ -713,6 +761,20 @@ void debug_protocol_send_telemetry() {
     else data["mission.left_mm"] = nullptr;
     if (mission_right_mm()) data["mission.right_mm"] = mission_right_mm();
     else data["mission.right_mm"] = nullptr;
+    const int16_t frontEdge = mission_front_edge_clearance_mm();
+    const int16_t leftEdge = mission_left_edge_clearance_mm();
+    const int16_t rightEdge = mission_right_edge_clearance_mm();
+    const int16_t nearestEdge = mission_nearest_edge_clearance_mm();
+    if (frontEdge != -32768) data["mission.front_edge_mm"] = frontEdge;
+    else data["mission.front_edge_mm"] = nullptr;
+    if (leftEdge != -32768) data["mission.left_edge_mm"] = leftEdge;
+    else data["mission.left_edge_mm"] = nullptr;
+    if (rightEdge != -32768) data["mission.right_edge_mm"] = rightEdge;
+    else data["mission.right_edge_mm"] = nullptr;
+    if (nearestEdge != -32768) data["mission.nearest_edge_mm"] = nearestEdge;
+    else data["mission.nearest_edge_mm"] = nullptr;
+    if (mission_nearest_sensor()[0]) data["mission.nearest_sensor"] = mission_nearest_sensor();
+    else data["mission.nearest_sensor"] = nullptr;
     data["mission.detour_count"] = mission_detour_count();
     data["bluetooth.active"] = jsonActive && activeTransport == DebugTransport::Bluetooth;
     data["bluetooth.rx_bytes"] = (long)console_bluetooth_rx_bytes();
@@ -751,6 +813,7 @@ static void handle_command(JsonDocument& doc) {
         drum_control_stop();
         magnet_control_off();
         servo_control_stop();
+        exploration_mode_stop("Stopped: emergency stop");
         navigation_stop("Emergency stop");
         mission_stop("Emergency stop");
         debug_protocol_log("WARNING", "STOP: actuator outputs set to safe state");
@@ -765,6 +828,7 @@ static void handle_command(JsonDocument& doc) {
             drum_control_stop();
             magnet_control_off();
             servo_control_stop();
+            exploration_mode_stop("Stopped: debug mode disabled");
             navigation_stop("Debug mode disabled");
             mission_stop("Debug mode disabled");
         }
@@ -791,6 +855,7 @@ static void handle_command(JsonDocument& doc) {
             send_error("drive_set requires debug mode");
             return;
         }
+        exploration_mode_stop("Stopped: manual drive command took control");
         navigation_stop("Manual drive command");
         mission_stop("Manual drive command");
         drive_control_set_percent(doc["left"] | 0, doc["right"] | 0);
@@ -800,6 +865,7 @@ static void handle_command(JsonDocument& doc) {
             send_error("drum_set requires debug mode");
             return;
         }
+        exploration_mode_stop("Stopped: manual drum command took control");
         const int left = doc["left"] | 0;
         const int right = doc["right"] | 0;
         drum_control_set_percent(left, right);
@@ -821,21 +887,53 @@ static void handle_command(JsonDocument& doc) {
             return;
         }
         if (enabled) mission_stop("8x8 test navigation took control");
+        if (enabled) exploration_mode_stop("Stopped: legacy navigation took control");
         if (!navigation_set_enabled(enabled)) {
             send_error(navigation_get_stop_reason());
         } else {
             debug_protocol_log("INFO", enabled ? "Navigation started" : "Navigation stopped");
         }
 
+    } else if (strcmp(command, "explore_start") == 0) {
+        if (!debugMode) {
+            send_error("explore_start requires debug mode");
+            return;
+        }
+        navigation_stop("Arena-free explore took control");
+        mission_stop("Arena-free explore took control");
+        if (!exploration_mode_start()) {
+            send_error(exploration_mode_reason());
+        } else {
+            debug_protocol_log("INFO", "Arena-free autonomous exploration started");
+        }
+    } else if (strcmp(command, "explore_stop") == 0) {
+        exploration_mode_stop("Stopped by operator");
+        debug_protocol_log("INFO", "Autonomous exploration stopped");
+    } else if (strcmp(command, "explore_keepalive") == 0) {
+        if (debugMode) exploration_mode_keepalive();
+
     } else if (strcmp(command, "mission_begin") == 0) {
+        exploration_mode_stop("Stopped: arena mission configuration took control");
         const int count = doc["count"] | 0;
         if (!debugMode || count < 1 || count > MISSION_MAX_WAYPOINTS ||
             !mission_begin(static_cast<uint8_t>(count), doc["start_x_mm"] | -1.0f,
                            doc["start_y_mm"] | -1.0f,
                            doc["start_heading_deg"] | 0.0f,
                            doc["robot_radius_mm"] | 215.0f,
-                           doc["margin_mm"] | 90.0f))
-            send_error("Mission begin rejected: check Debug Mode, start and route size");
+                           doc["margin_mm"] | 90.0f,
+                           doc["encoder0_mm_per_count"] | ENCODER0_MM_PER_COUNT,
+                           doc["encoder1_mm_per_count"] | ENCODER1_MM_PER_COUNT,
+                           doc["encoder0_reversed"] | static_cast<bool>(ENCODER0_REVERSED),
+                           doc["encoder1_reversed"] | static_cast<bool>(ENCODER1_REVERSED)))
+            send_error("Mission begin rejected: check Debug Mode, start, route size and encoder scales");
+    } else if (strcmp(command, "mission_sensor") == 0) {
+        const char* key = doc["key"] | "";
+        if (!debugMode || !mission_set_sensor(
+                key, doc["x_mm"] | 0.0f, doc["y_mm"] | 0.0f,
+                doc["angle_deg"] | 0.0f, doc["height_mm"] | 0.0f,
+                doc["enabled"] | true, doc["matrix_fov_deg"] | 60.0f,
+                doc["matrix_mirrored"] | false))
+            send_error("Mission sensor rejected: unknown key or invalid mounting geometry");
     } else if (strcmp(command, "mission_obstacle") == 0) {
         const int index = doc["index"] | -1;
         if (!debugMode || index < 0 || index >= MISSION_MAX_OBSTACLES ||
@@ -868,11 +966,14 @@ static void handle_command(JsonDocument& doc) {
         if (!debugMode || !mission_commit()) send_error("Mission commit rejected: incomplete or unsafe route/map");
         else debug_protocol_log("INFO", "Robot-side route uploaded and validated; awaiting Start");
     } else if (strcmp(command, "mission_start") == 0) {
+        exploration_mode_stop("Stopped: arena mission took control");
         if (!debugMode || !mission_start()) send_error("Mission start rejected: upload route, calibrate IMU and set 100% drive limit");
         else debug_protocol_log("INFO", "Robot-side mission started");
     } else if (strcmp(command, "mission_resume") == 0) {
+        exploration_mode_stop("Stopped: arena mission took control");
         if (!debugMode || !mission_resume()) send_error("Mission resume rejected: not paused at weight site");
     } else if (strcmp(command, "mission_stop") == 0) {
+        exploration_mode_stop("Stopped: arena mission stopped");
         mission_stop("Stopped by operator");
     } else if (strcmp(command, "encoders_reset") == 0) {
         encoders_reset();

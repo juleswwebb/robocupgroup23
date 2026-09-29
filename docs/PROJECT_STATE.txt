@@ -1,5 +1,100 @@
 # Robocup Group 23 Project State
 
+2026-09-30 arena-free Autonomous Explore mode: the Dashboard now has a direct
+Start Autonomous Run / Stop Run control; no arena drawing, weight placement,
+route upload, encoder odometry or calibrated IMU is required. The Teensy drives
+straight at 100% left / 85% right (subject to the existing drive limit), runs
+the D28/D29 drum outputs continuously at -100% / -100%, and uses coherent
+neighbouring 8x8 zones over three distinct frames to initiate an avoidance
+turn. It picks a clearer side using the side ultrasonics when available and
+otherwise the array's left/right field or an alternating turn. The front
+angled VL53 pairs XSHUT6/5 (left) and XSHUT3/4 (right) look for a lower sensor
+return at least 150 mm nearer than its upper partner for three samples; the
+robot then makes short turns to center the estimated bearing and drives through
+the target with the drum still running. Exploration reports phase, sensor
+ranges, weight attempts and avoidance turns in live telemetry. Debug Mode is
+required, drive limit must be at least 80%, and valid 8x8 or straight-ahead TOF
+data must be present at start. Emergency STOP, Debug Mode exit, manual drive or
+drum takeover, and loss of the GUI keepalive stop both drive and drum. Avoidance
+turning is not a STOP threshold; the array turns at a coherent 420 mm detection
+and continues. Hardware behavior is not yet tested; first run in a clear,
+supervised area with STOP accessible.
+
+2026-09-30 weight-site centering and resume checkpoint: Mission Planner weight
+search points require repeated top/bottom VL53 evidence. The Teensy projects the
+lower ToF return through the configured sensor position/angle and makes brief
+in-place turns to bring the detected weight into the robot's forward centreline;
+centering is capped at 18 degrees of heading change or 2.5 seconds. A single
+valid top/bottom pair can guide the estimate; incomplete geometry advances to
+the other planned scan views, then pauses rather than guessing. At a confirmed
+weight site the GUI shows a persistent Resume Weight Route / Stop Mission
+banner above the tabs, as well as the Mission Planner control. Centering uses
+real motor commands and has not been hardware-tested; first test with wheels
+raised, then with a clear stop zone and an operator ready to stop the robot.
+Collection, pickup, sorting and unloading remain manual.
+
+2026-09-30 obstacle trigger update: the user's requested sensor cutoff is a raw
+range strictly below 50 mm, because the sensors sit at the robot perimeter.
+The Teensy no longer treats projected chassis-edge clearances of 180 mm or
+20 mm as sensor obstacle triggers. A forward return under 50 mm is confirmed
+from the same sensor on two mission samples before the detour/block response;
+a side ultrasonic return under 50 mm is confirmed from that sensor before the
+mission brakes and stops. Desktop emergency checks and live obstacle mapping
+use the same strict <50 mm cutoff. Explicit mapped walls/obstacles and arena
+footprint validation remain separate from sensor-return triggers. This has
+been build/test-checked in software, not uploaded or hardware-tested yet.
+
+2026-09-30 mission-stop correction: route planning still uses the operator's
+configured chassis radius plus map margin to validate the uploaded path, but
+runtime odometry no longer halts merely for entering that extra virtual
+margin. Runtime map checks use chassis radius + 20 mm. Mission upload now sends
+the Arena View's enabled state, x/y mount position, aim angle and height for
+each VL53, 8x8 and ultrasonic sensor to the Teensy. The firmware projects valid
+point-ToF returns and robust per-column 8x8 returns into robot-local geometry,
+then compares hit-to-centre distance against the configured chassis radius.
+The same projected edge clearance is available as mission telemetry, along
+with the sensor that supplied the nearest hit. The mission only starts a
+detour only after the same forward sensor reports a raw range below 50 mm for
+two mission samples; edge-clearance values remain telemetry and do not trigger
+sensor avoidance. Side sensor returns below 50 mm also need same-sensor
+confirmation before stopping. A detour requires sensor-checked side clearance
+and a map-clear physical path. No
+physical run has verified these revised thresholds or geometry yet; perform
+the first test with wheels raised, then at low-risk speed in a clear area.
+
+2026-09-30 IMU bus correction: SEN0253/BNO055 is now configured on I2C bus 0
+(`Wire`, SDA D18/SCL D19) at 7-bit address `0x28`, matching the user's current
+wiring. The same bus also carries the SX1509 and six VL53 sensors; their
+addresses do not conflict with `0x28`. The Wiring tab and Mission Planner's
+missing-IMU hint now show bus 0. The 8x8 TOF remains on bus 1 (`Wire1`).
+
+2026-09-30 Mission Planner execution handoff: Mission Planner remains the
+desktop map editor and route planner, but FOLLOW now uploads the start pose,
+static no-go geometry and waypoint list to the Teensy once. The Teensy validates
+the route and owns the timed route-following loop; telemetry reports mission
+state, waypoint and arena-frame pose back to the app. Route commands use
+`mission_begin`, `mission_obstacle`, `mission_chunk`, `mission_commit`, then
+`mission_start`; the existing local PC `drive_set` follower is no longer the
+Mission Planner's execution path. Mapped real weights are tagged for onboard
+upper/lower ToF checks; confirmed candidates pause at an operator checkpoint.
+Pickup/sorting is still not automatic, and this is not yet a full port of
+Group 7's dynamic occupancy-map/A* re-planning. The Teensy's current obstacle
+response is a front-range stop plus a sonar-checked, map-clear sidestep.
+
+Mission readiness/calibration: both `encoder.0` and `encoder.1` must be present
+and changing; BNO055 heading must be valid and gyro calibration must reach at
+least 2/3. Hold the robot still and level for several seconds to let the BNO055
+gyro calibrate; system/magnetometer scores need not be 3/3 for this current
+gate. Encoder 0 is left, encoder 1 right; firmware uses the measured defaults
+0.08833 and 0.08609 mm/count and negates encoder 1. These are derived from the
+operator's two straight-line runs, not a new calibration procedure. If counts
+do not change while the wheels turn, troubleshoot encoder signals before
+touching scale values. No hardware run has verified the new mission handoff.
+Straight-drive default: mission following and the desktop fallback follower
+command left 100% / right 85% at zero heading error, as specified by the
+operator. Dashboard keyboard scales default to the same 100% / 85% ratio;
+existing locally saved scale settings remain user-controlled.
+
 2026-09-30 Mission Planner wall editing: newly placed walls default to
 600 x 130 mm. The selected wall/ramp has a rotation field accepting any
 angle from -180 to +180 degrees in 0.1-degree increments. Rendering,
@@ -17,7 +112,8 @@ settings override defaults. The Mission Planner receives all six by telemetry
 ID, and weight detection requires both enabled sensors in a pair. Side
 ultrasonics are visual wall rays, not obstacle-planner inputs. Encoder/IMU
 telemetry drives pose; optical flow and inductive data do not yet affect
-route decisions. The separate firmware avoidance test still uses 8x8/IMU.
+route decisions. The robot-side mission now uses the editable mounts for its
+close-obstacle edge-clearance checks and ultrasonic side-clearance estimates.
 Offline GUI suite: 77 tests pass. No physical navigation run was performed.
 
 2026-09-29 00:54 run follow-up: drive commands show repeated hard
@@ -188,7 +284,7 @@ BluetoothSerial.py generic serial worker thread
 3. Initializes the distance-sensor subsystem. This starts both I2C buses, initializes the add-on SX1509 at `0x71`, registers the enabled distance sensors, holds all VL53 devices in reset, then releases and assigns them one at a time. The serial TOF is disabled because Serial2 is allocated to drive PWM.
 4. Initializes the TCS34725 colour sensor on `Wire1`.
 5. Initializes the PMW3901 optical-flow sensor on SPI.
-6. Initializes the BNO055 IMU on `Wire1`.
+6. Initializes the BNO055 IMU on `Wire` (I2C bus 0).
 7. Initializes the inductive sensor, encoder interrupts, test servo outputs, and both main-drive outputs at neutral.
 8. Starts the dual USB/Serial1 line console and JSON protocol. JSON-looking lines from either transport are routed from Console to DebugProtocol.
 9. Adds and enables the active scheduler tasks.
@@ -241,7 +337,7 @@ The wrappers cache values. Other code should use the facade getters rather than 
 |---|---:|---|---:|---|
 | `Wire` I2C bus 0 | SDA 18, SCL 19 | Add-on SX1509 TOF expander | `0x71` | Controls six point-ToF XSHUT lines on IO5, IO6, IO7, IO8, IO9, IO10 |
 | `Wire` I2C bus 0 | SDA 18, SCL 19 | 6 x VL53L1X | `0x35` to `0x3A` | SX1509 IO5/IO6/IO7/IO8/IO9/IO10; former top L0X units removed |
-| `Wire1` I2C bus 1 | SDA 17, SCL 16 | BNO055 | `0x28` | IMU part of SEN0253 |
+| `Wire` I2C bus 0 | SDA 18, SCL 19 | BNO055 | `0x28` | IMU part of SEN0253 |
 | `Wire1` I2C bus 1 | SDA 17, SCL 16 | TCS34725 | `0x29` | Raw RGBC colour sensor |
 | `Wire1` I2C bus 1 | SDA 17, SCL 16 | DFRobot 8x8 TOF | `0x33` | 64-zone matrix sensor |
 | SPI | MOSI 11, MISO 12, SCK 13 | PMW3901 | CS 10 | Optical-flow counts, not millimetres |
@@ -249,7 +345,7 @@ The wrappers cache values. Other code should use the facade getters rather than 
 | `Serial2` connector | RX2 D7, TX2 D8 | Main-drive ESC PWM | 1050/1500/1950 us | Serial ToF disabled: these pins cannot share UART and PWM |
 | USB `Serial` | USB cable | Debug GUI and text console | 115200 selected in app | JSON and text are mutually exclusive modes |
 
-`Wire` runs at 400 kHz. `Wire1` is currently set to 100 kHz by `distance_sensors_init()` for conservative 8x8 operation; the colour and IMU modules reuse the already-started bus.
+`Wire` runs at 400 kHz. `Wire1` is currently set to 100 kHz by `distance_sensors_init()` for conservative 8x8 operation; the colour module reuses the already-started bus.
 
 ### GPIO and analog connections
 
@@ -459,7 +555,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 
 ## Known issues and technical risks
 
-1. **The `Wire1` hardware path needs revalidation.** The 8x8 array, colour sensor and BNO055 share this bus. They worked at different stages, but later the 8x8 became invalid and colour values became zero. A failure affecting all three points first to shared SDA, SCL, power, ground, or connector integrity rather than three independent driver failures.
+1. **The `Wire1` hardware path needs revalidation.** The 8x8 array and colour sensor share this bus. The BNO055 is configured on `Wire`/bus 0 per the latest user wiring update. An issue affecting the 8x8 and colour sensor together points first to shared SDA, SCL, power, ground, or connector integrity.
 2. **Ultrasonic sensing is unverified.** The firmware now enables D30/D31 and D32/D33, alternates trigger pulses at least 60 ms apart and invalidates readings without an echo after 38 ms. Verify power and level-shift each HC-SR04 echo to 3.3 V before connecting to a Teensy 4.0.
 3. **Encoders work after replacing the CPU board.** The encoder board uses the direct Digital Raw 2 inputs D2/D3 and D4/D5. Both raw A/B transitions and signed counts have been observed. Encoder distance scale and left/right polarity still require measured calibration.
 4. **Servo linkage and angle limits need physical verification.** The operator identified the servo as a positional Hextronik HX12K on D20 and calibrated 125° as center, 100° as real-weight, and 150° as fake-weight. Keep the linkage clear during initial tests and stop if it binds. D20 aliases A6, whose IR sampling is disabled.
@@ -474,7 +570,8 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 ## Recommended next integration order
 
 1. Recheck board IO power, ground, and both I2C buses with an address scanner.
-2. Revalidate all three `Wire1` devices together at `0x28`, `0x29`, and `0x33`.
+2. Revalidate the bus-0 BNO055 at `0x28`, then revalidate the `Wire1` 8x8 array
+   at `0x33` (and the optional colour sensor at `0x29`, if reinstalled).
 3. Verify the HX12K linkage's safe travel around its calibrated 100°/125°/150° targets; use angle mode rather than the raw pulse test.
 4. Prove encoder waveforms electrically, then verify signed counts and counts per wheel revolution.
 5. Restore HC-SR04 power and echo operation, then stagger trigger timing.
@@ -569,8 +666,8 @@ ARENA VIEW AND NAVIGATION
   separately from live range points. `arena_planner.py` previews an A* route
   on a 100 mm grid, inflating known geometry by robot radius and margin.
   This simpler Arena View route is a preview; the separate Mission Planner
-  builds and follows its own route through placed weights after explicit
-  operator confirmation. The route runs in the desktop GUI, not firmware.
+  builds routes through placed weights; after explicit operator confirmation,
+  the map and waypoints are uploaded for firmware-side execution.
 - Paired top/bottom L1X readings (XSHUT6/5 left and XSHUT3/4 right)
   can identify a likely weight after three frames with a >=150 mm depth gap.
   Placement and 45-degree inward aim are editable in Arena View; collection
@@ -579,9 +676,9 @@ ARENA VIEW AND NAVIGATION
   pre-laid arena MissionLayout, 4.9 x 2.4 m bounds, green/blue home and
   opposite-home no-go, walls/ramps/tubes, real/dummy weights, inflated A*
   routing, a 64-point waypoint cap, firmware mission execution, live obstacle
-  handling, and a bounded multi-view search at each weight site. Group 23 has
-  an adapted desktop Mission Planner and supervised GUI route follower; it
-  does not use Group 7's firmware mission-upload protocol.
+  handling, and a bounded multi-view search at each weight site. Group 23 now
+  uses its own `MissionNavigation` upload/start protocol and keeps the planner
+  on the PC while route control runs on the Teensy.
 - The Group 7 firmware is tightly coupled to its different pins, wheel drive,
   sensor layout and commands; it must not be copied into Group 23 wholesale.
   The existing Group 23 firmware navigation remains the conservative 8x8/IMU
@@ -594,27 +691,39 @@ ARENA VIEW AND NAVIGATION
   absent from the current wiring map and hidden in the live GUI; firmware
   drivers and raw serial output are unchanged. A measured-distance
   encoder calibration helper saves each wheel's scale and direction in
-  desktop QSettings; wheel track and real-world accuracy still require tests.
-- The Mission Planner reads all six point-ToF channels by stable signal ID.
-  IO8/5/6/7 are the inward-facing front upper/lower pairs for weight evidence;
-  IO9/10 are the straight-ahead top right/left sensors. Side ultrasonics are
-  displayed as wall-range rays, while encoder 0/1 and the IMU determine pose.
-  The 8x8 array supplies forward ranging and route obstacle candidates.
+  desktop QSettings; FOLLOW passes those values to firmware. Wheel track and
+  real-world accuracy still require physical verification.
+- Operator-confirmed navigation sensor roles: the forward-facing 8x8 array is
+  the primary sensor for detecting walls and obstacles ahead. Use its coherent
+  forward-field returns as the main evidence; do not treat floor/chassis rows,
+  isolated pixels, or an empty/no-return frame as a confirmed obstacle. The
+  angled inward-facing front pair on each side is primarily for finding
+  weights: right upper/lower are XSHUT3/4 (SX1509 IO8/IO5), and left
+  upper/lower are XSHUT6/5 (IO7/IO6). Their relative upper-versus-lower
+  returns can support weight detection; they are not the primary forward-wall
+  detector. The straight-ahead Top_Right/Top_Left point sensors are XSHUT7/8
+  (IO9/IO10) and are supplementary to the 8x8. Their low or invalid readings
+  must not independently declare a frontal obstacle; use them only to add to
+  or corroborate the array's evidence. Side ultrasonics are intended for
+  lateral wall clearance, while encoder 0/1 and the IMU determine pose.
   Optical flow and inductive sensing do not yet correct pose or plan the route.
   The firmware's separate Arena View START NAVIGATION controller still uses
   8x8/IMU avoidance only; it does not follow Mission Planner paths. The
-  operator-set 20 mm obstacle mapping threshold limits detours during tests.
+  operator-set <50 mm raw sensor threshold limits live obstacle mapping and
+  immediate obstacle handling during tests.
 - Two drum/reel outputs use D28 and D29,
   assuming a servo/PPM motor driver like Group 7's DFR0513. `DrumControl.cpp`
   starts neutral, permits +/-100%, and neutralises after 300 ms without a
   command. `drum_set` requires Debug Mode; STOP and Debug Mode exit neutralise
   both. Dashboard has a press-and-hold test button. Actual wiring, direction
   and driver type have NOT been verified on Group 23 hardware.
-- Group 23's supervised Mission Planner route can drive the robot when the
-  operator explicitly starts FOLLOW. It requires Debug Mode, both encoder
-  readings, gyro-calibrated IMU, healthy 8x8 frames, live telemetry and the
-  firmware's confirmed 100% drive limit. The GUI replans around clustered 8x8
-  obstacles, stops on unsafe/stale data, and enforces a time/progress limit.
+- Group 23's onboard Mission Planner route starts only after map upload,
+  firmware validation and explicit operator confirmation. It requires Debug
+  Mode, both encoder streams, valid BNO055 heading, gyro calibration >=2/3,
+  healthy 8x8 frames and confirmed 100% drive limit. Firmware controls the
+  route and publishes mission pose/state. Dynamic obstacle response is still
+  limited to a sonar-checked sidestep; it is not Group 7's full live occupancy
+  mapping and A* re-planner.
 - Each planned real-weight site now includes a safe staging point and two
   lateral sensor-search views. The GUI uses the configured x/y/aim geometry
   for the inward-facing XSHUT6/5 (left) and XSHUT3/4 (right) upper/lower pairs.
@@ -624,8 +733,8 @@ ARENA VIEW AND NAVIGATION
   sensor alignment with pickup explicitly unverified. Drum actuation,
   collection, sorting and unloading remain manual/not implemented.
 - This is not yet equivalent to Group 7's full onboard mission firmware:
-  route decisions run in the desktop app, so the connection must remain live.
+  collection, sorting and unloading are not automated, and the onboard
+  obstacle response does not yet rebuild an A* route from live detections.
   Group 23's encoder scale, start pose, sensor angles and obstacle clearances
-  still need physical calibration. Validate with wheels raised and an operator
-  at STOP before any floor trial; successful offline tests are not hardware
-  validation.
+  still need physical validation. Keep an operator at STOP and the robot in a
+  clear test area; a successful build is not hardware validation.

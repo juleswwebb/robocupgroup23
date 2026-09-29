@@ -28,6 +28,7 @@ public:
     uint16_t getDistanceMM() const override; // centre pixel, mm
     bool isValid() const override;
     bool isGridAvailable() const { return initialized_ && lastReadOk_; }
+    uint32_t lastSuccessfulReadMs() const { return lastSuccessfulReadMs_; }
     const char* getName() const override { return name_; }
 
     // Full 8x8 grid, row-major, mm. buf must hold MATRIX_LIDAR_GRID_SIZE entries.
@@ -38,6 +39,7 @@ private:
     DFRobot_MatrixLidar_I2C sensor_;
     uint16_t grid_[MATRIX_LIDAR_GRID_SIZE] = {0};
     uint32_t lastPollMs_ = 0;
+    uint32_t lastSuccessfulReadMs_ = 0;
     bool lastReadOk_ = false;
     bool initialized_ = false;
 };

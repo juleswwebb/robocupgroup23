@@ -72,7 +72,7 @@ from arena_view import ArenaView, number
 from mission_view import MissionPlannerView
 from route_follower import (
     EMERGENCY_STOP_MM, MAP_REQUIRED_MM, PointTofStopGuard, RouteFollower, local_to_mission,
-    confirm_obstacle_points, matrix_obstacle_points, mission_to_local,
+    confirm_obstacle_points, filter_uncorroborated_front_tofs, matrix_obstacle_points, mission_to_local,
     point_tof_obstacle_points, prepare_route,
 )
 from weight_targeting import WeightTracker
@@ -335,6 +335,10 @@ class RobotDebugGUI(QMainWindow):
         self.drive_keys: set[int] = set()
         self.drive_command_available = False
         self.drum_command_available = False
+        self.explore_command_available = False
+        self.explore_requested = False
+        self.explore_seen_active = False
+        self.explore_start_sent_at = None
         self.magnet_command_available = False
         self.servo_command_available = False
         self.servo_angle_command_available = False
@@ -350,6 +354,12 @@ class RobotDebugGUI(QMainWindow):
         self.magnet_is_on = False
         self.robot_debug_mode = False
         self.route_follower = None
+        self.robot_mission_armed = False
+        self.robot_mission_start_sent = False
+        self.robot_mission_start_sent_at = None
+        self.robot_mission_upload_started = None
+        self.robot_mission_commit_acknowledged = False
+        self.robot_mission_last_error = None
         self.route_last_frame_monotonic = None
         self.route_started_at = None
         self.route_awaiting_pose = False
@@ -429,6 +439,9 @@ class RobotDebugGUI(QMainWindow):
         self.drum_keepalive_timer = QTimer(self)
         self.drum_keepalive_timer.timeout.connect(self._send_drum_command)
         self.drum_keepalive_timer.start(100)
+        self.explore_keepalive_timer = QTimer(self)
+        self.explore_keepalive_timer.timeout.connect(self._send_explore_keepalive)
+        self.explore_keepalive_timer.start(150)
         self.servo_keepalive_timer = QTimer(self)
         self.servo_keepalive_timer.timeout.connect(self._send_servo_test_command)
         self.servo_keepalive_timer.start(100)
@@ -866,6 +879,32 @@ class RobotDebugGUI(QMainWindow):
 
         main_layout.addLayout(health_row)
 
+        # Keep operator checkpoints visible regardless of the selected tab.
+        # The mission planner also has its own resume button, but that control
+        # is easy to miss while watching Dashboard telemetry during a run.
+        self.mission_checkpoint = QGroupBox("WEIGHT SITE CHECKPOINT")
+        self.mission_checkpoint.setObjectName("checkpointBanner")
+        checkpoint_row = QHBoxLayout(self.mission_checkpoint)
+        self.mission_checkpoint_label = QLabel(
+            "A weight-like target was confirmed. Check the robot before resuming."
+        )
+        self.mission_checkpoint_label.setWordWrap(True)
+        checkpoint_row.addWidget(self.mission_checkpoint_label, 1)
+        self.resume_mission_button = QPushButton("RESUME WEIGHT ROUTE")
+        self.resume_mission_button.setObjectName("primary")
+        self.resume_mission_button.setMinimumHeight(38)
+        self.resume_mission_button.clicked.connect(self._start_mission_route)
+        checkpoint_row.addWidget(self.resume_mission_button)
+        self.stop_mission_button = QPushButton("STOP MISSION")
+        self.stop_mission_button.setObjectName("danger")
+        self.stop_mission_button.setMinimumHeight(38)
+        self.stop_mission_button.clicked.connect(
+            lambda: self._stop_mission_route("Stopped by operator")
+        )
+        checkpoint_row.addWidget(self.stop_mission_button)
+        self.mission_checkpoint.hide()
+        main_layout.addWidget(self.mission_checkpoint)
+
         self.tabs = QTabWidget()
 
         main_layout.addWidget(
@@ -1067,6 +1106,42 @@ class RobotDebugGUI(QMainWindow):
             stop_group
         )
 
+        explore_group = QGroupBox("Autonomous Explore · no arena map required")
+        explore_layout = QVBoxLayout(explore_group)
+        explore_hint = QLabel(
+            "Starts forward exploration without a drawn arena or calibrated IMU. "
+            "The 8×8 TOF confirms forward obstacles over multiple frames, then the "
+            "robot turns toward the clearer side and keeps exploring. The angled "
+            "top/bottom pairs look for weights, center on a confirmed target, and "
+            "drive through it. Drum motors run continuously at −100% / −100%. "
+            "Test in a clear, supervised area; this mode commands up to 100% drive."
+        )
+        explore_hint.setWordWrap(True)
+        explore_hint.setObjectName("hint")
+        explore_layout.addWidget(explore_hint)
+        explore_buttons = QHBoxLayout()
+        self.explore_start_button = QPushButton("START AUTONOMOUS RUN")
+        self.explore_start_button.setObjectName("primaryButton")
+        self.explore_start_button.setMinimumHeight(42)
+        self.explore_start_button.setEnabled(False)
+        self.explore_start_button.clicked.connect(self._start_exploration)
+        self.explore_stop_button = QPushButton("STOP RUN")
+        self.explore_stop_button.setObjectName("danger")
+        self.explore_stop_button.setMinimumHeight(42)
+        self.explore_stop_button.setEnabled(False)
+        self.explore_stop_button.clicked.connect(
+            lambda: self._stop_exploration(send_command=True)
+        )
+        explore_buttons.addWidget(self.explore_start_button, 2)
+        explore_buttons.addWidget(self.explore_stop_button, 1)
+        explore_layout.addLayout(explore_buttons)
+        self.explore_status_label = QLabel("CONNECT, ENABLE DEBUG MODE, THEN START")
+        self.explore_status_label.setObjectName("statusPill")
+        self.explore_status_label.setWordWrap(True)
+        theme.set_pill_state(self.explore_status_label, "")
+        explore_layout.addWidget(self.explore_status_label)
+        command_panel_layout.addWidget(explore_group)
+
         drive_group = QGroupBox("Keyboard Drive")
         drive_layout = QVBoxLayout(drive_group)
 
@@ -1107,8 +1182,8 @@ class RobotDebugGUI(QMainWindow):
         self.drive_right_scale = QSpinBox()
         self.drive_right_scale.setRange(0, 100)
         self.drive_right_scale.setSuffix(" %")
-        self.drive_right_scale.setValue(int(self.settings.value("drive/right_scale", 100)))
-        self.drive_right_scale.setToolTip("Try 98% right with 100% left to test the measured left drift")
+        self.drive_right_scale.setValue(int(self.settings.value("drive/right_scale", 85)))
+        self.drive_right_scale.setToolTip("Straight-driving default: 85% right with 100% left; adjust for your drivetrain")
         trim_row.addWidget(self.drive_right_scale)
         drive_layout.addLayout(trim_row)
 
@@ -1290,6 +1365,119 @@ class RobotDebugGUI(QMainWindow):
         Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
     }
 
+    def _exploration_controls_available(self) -> bool:
+        return (
+            self.bluetooth.is_connected()
+            and self.robot_debug_mode
+            and self.explore_command_available
+            and self.last_telemetry_monotonic is not None
+            and time.monotonic() - self.last_telemetry_monotonic <= 2.0
+        )
+
+    def _update_exploration_controls(self):
+        connected = self.bluetooth.is_connected()
+        active = (connected and bool(self.telemetry.get("explore.active", False)))
+        if active:
+            self.explore_seen_active = True
+        elif self.explore_requested and self.explore_seen_active:
+            self.explore_requested = False
+
+        can_start = self._exploration_controls_available()
+        self.explore_start_button.setEnabled(
+            can_start and not active and not self.explore_requested
+        )
+        self.explore_stop_button.setEnabled(
+            connected and (active or self.explore_requested or self.explore_command_available)
+        )
+
+        if active:
+            state = str(self.telemetry.get("explore.state", "RUNNING"))
+            reason = str(self.telemetry.get("explore.reason", ""))
+            details = []
+            front = self.telemetry.get("explore.front_mm")
+            if isinstance(front, (int, float)):
+                details.append(f"front {int(front)} mm")
+            weights = self.telemetry.get("explore.weights_seen")
+            if isinstance(weights, (int, float)):
+                details.append(f"weight attempts {int(weights)}")
+            status = f"RUNNING · {state}"
+            if details:
+                status += " · " + " · ".join(details)
+            if reason and state != "EXPLORING":
+                status += f"\n{reason}"
+            self.explore_status_label.setText(status)
+            theme.set_pill_state(self.explore_status_label, "busy")
+        elif self.explore_requested:
+            if (self.explore_start_sent_at is not None
+                    and time.monotonic() - self.explore_start_sent_at > 2.0):
+                self.explore_requested = False
+                reason = str(self.telemetry.get("explore.reason", "Start was not acknowledged"))
+                self.explore_status_label.setText(f"START REJECTED · {reason}")
+                theme.set_pill_state(self.explore_status_label, "bad")
+            else:
+                self.explore_status_label.setText(
+                    "START REQUESTED · waiting for robot telemetry"
+                )
+                theme.set_pill_state(self.explore_status_label, "busy")
+        elif not connected:
+            self.explore_status_label.setText("DISCONNECTED")
+            theme.set_pill_state(self.explore_status_label, "")
+        elif not self.robot_debug_mode:
+            self.explore_status_label.setText("ENABLE DEBUG MODE TO START")
+            theme.set_pill_state(self.explore_status_label, "")
+        else:
+            reason = str(self.telemetry.get("explore.reason", "Not started"))
+            state = str(self.telemetry.get("explore.state", "IDLE"))
+            self.explore_status_label.setText(f"{state} · {reason}")
+            theme.set_pill_state(self.explore_status_label, "bad" if "reject" in reason.lower() else "")
+
+    def _start_exploration(self):
+        if not self._exploration_controls_available():
+            self._update_exploration_controls()
+            return
+        self._stop_mission_route("Autonomous explore started")
+        self._set_drive_armed(False)
+        self._stop_drum_hold()
+        self.explore_requested = True
+        self.explore_seen_active = False
+        self.explore_start_sent_at = time.monotonic()
+        self.bluetooth.send_command("explore_start")
+        self.recorder.record_command("explore_start", {})
+        self.add_log("TX", "explore_start()")
+        self._update_exploration_controls()
+
+    def _stop_exploration(self, send_command: bool = True, reason: str | None = None):
+        was_requested = self.explore_requested or bool(
+            self.telemetry.get("explore.active", False)
+        )
+        self.explore_requested = False
+        self.explore_seen_active = False
+        self.explore_start_sent_at = None
+        self.telemetry["explore.active"] = False
+        if (send_command and was_requested and self.bluetooth.is_connected()
+                and self.explore_command_available):
+            self.bluetooth.send_command("explore_stop")
+            self.recorder.record_command("explore_stop", {})
+        if reason:
+            self.explore_status_label.setText(reason)
+            theme.set_pill_state(self.explore_status_label, "ok")
+        else:
+            self._update_exploration_controls()
+
+    def _send_explore_keepalive(self):
+        if not (self.explore_requested or self.telemetry.get("explore.active")):
+            return
+        if (not self.bluetooth.is_connected() or not self.robot_debug_mode
+                or not self.explore_command_available):
+            self._stop_exploration(send_command=True, reason="STOPPED · CONTROL LINK UNAVAILABLE")
+            return
+        if (self.last_telemetry_monotonic is None
+                or time.monotonic() - self.last_telemetry_monotonic > 1.5):
+            self._stop_exploration(send_command=True, reason="STOPPED · TELEMETRY LOST")
+            theme.set_pill_state(self.explore_status_label, "bad")
+            return
+        self.bluetooth.send_command("explore_keepalive")
+
     def _drum_controls_available(self) -> bool:
         return (self.bluetooth.is_connected() and self.robot_debug_mode
                 and self.drum_command_available)
@@ -1307,6 +1495,8 @@ class RobotDebugGUI(QMainWindow):
     def _start_drum_hold(self):
         if not self._drum_controls_available():
             return
+        self._stop_exploration(send_command=True,
+                               reason="AUTONOMOUS RUN STOPPED · MANUAL DRUM CONTROL")
         if self.drum_latched:
             self.drum_latched = False
             self.drum_latch_button.blockSignals(True)
@@ -1323,6 +1513,8 @@ class RobotDebugGUI(QMainWindow):
             self.drum_latch_button.blockSignals(False)
             return
         if enabled:
+            self._stop_exploration(send_command=True,
+                                   reason="AUTONOMOUS RUN STOPPED · MANUAL DRUM CONTROL")
             self.drum_latched = True
             self.drum_held = False
             self.drum_latch_button.setText("STOP CONTINUOUS RUN")
@@ -1601,6 +1793,8 @@ class RobotDebugGUI(QMainWindow):
             self._set_drive_armed(False)
             return
         if armed:
+            self._stop_exploration(send_command=True,
+                                   reason="AUTONOMOUS RUN STOPPED · MANUAL DRIVE ARMED")
             self._stop_mission_route("Manual keyboard drive armed")
         if not armed:
             self.drive_keys.clear()
@@ -1920,6 +2114,18 @@ class RobotDebugGUI(QMainWindow):
         return min(values, key=lambda item: item[1]) if values else None
 
     def _start_mission_route(self):
+        # A weight-search stop is an operator checkpoint. Follow becomes
+        # Resume while paused; the Teensy remains the owner of route execution.
+        if self.robot_mission_armed:
+            if self.telemetry.get("mission.state") == "WEIGHT_SITE":
+                self.execute_command("mission_resume", {})
+                checkpoint = getattr(self, "mission_checkpoint", None)
+                if checkpoint is not None:
+                    checkpoint.hide()
+                self.mission_view.set_follow_status(
+                    "Resuming robot-side mission…", active=True
+                )
+            return
         if self.route_follower is not None:
             return
         reason = None
@@ -1934,10 +2140,16 @@ class RobotDebugGUI(QMainWindow):
             reason = "No fresh complete robot telemetry frame."
         frame = self.arena_view.model.latest
         if reason is None and (number(frame.get("encoder.0")) is None
-                               or number(frame.get("encoder.1")) is None
-                               or number(frame.get("imu.heading")) is None
-                               or (number(frame.get("imu.cal_gyro")) or 0) < 2):
-            reason = "Need both encoders and a valid, gyro-calibrated IMU."
+                               or number(frame.get("encoder.1")) is None):
+            reason = ("No encoder telemetry. Spin each wheel by hand and confirm "
+                      "encoder.0 (left) and encoder.1 (right) change.")
+        if reason is None and number(frame.get("imu.heading")) is None:
+            reason = "No valid BNO055 heading telemetry. Check the IMU connection on I2C bus 0 (D18/D19)."
+        gyro_cal = int(number(frame.get("imu.cal_gyro")) or 0)
+        if reason is None and gyro_cal < 2:
+            reason = (f"BNO055 gyro calibration is {gyro_cal}/3; at least 2/3 is required. "
+                      "Keep the robot still and level for several seconds, then try again. "
+                      "Your encoder distance scales are already set from the measured runs.")
         if reason is None and frame.get("tof.array_frame_ok") is not True:
             reason = "No healthy 8×8 ToF frame. Upload the updated firmware if this signal is missing."
         matrix_spec = next((spec for spec in self.arena_view.model.sensor_specs
@@ -1949,25 +2161,32 @@ class RobotDebugGUI(QMainWindow):
             reason = f"Forward obstacle is within {EMERGENCY_STOP_MM} mm."
         if reason is None:
             try:
-                points = prepare_route(self.mission_view.model)
+                # Firmware uses arena-frame millimetres; don't transform the
+                # planner's points into the old desktop follower's local frame.
+                points = list(self.mission_view.model.route)
+                if not points or len(points) > 64:
+                    raise ValueError("Plan a route with 1–64 waypoints first.")
             except (ValueError, KeyError, TypeError) as exc:
                 reason = str(exc)
         if reason:
             self.mission_view.set_follow_status(f"Cannot start: {reason}")
             return
         answer = QMessageBox.question(
-            self, "Start supervised route following?",
-            "Confirm the physical robot is stationary at the marked start, aligned "
+            self, "Upload and start robot-side route following?",
+            "The map and planned waypoints will be uploaded once; the Teensy then "
+            "follows the route onboard rather than relying on a continuous PC "
+            "drive-command loop. Confirm the physical robot is stationary at the marked start, aligned "
             "with the start arrow, and the arena is clear. Moving wheel commands "
-            "will be 85% left / 100% right when straight; the drive limit "
+            "will be 100% left / 85% right when straight; the drive limit "
             "will be set to 100%. Any latched drum command will continue while "
             "the robot moves. An obstacle on the route pauses the robot "
-            "while the app tries a detour. "
-            "The app must stay "
-            "connected; STOP or loss of pose/8×8 frame health halts the motors. "
-            "Mapped weight returns can be approached only when both ToF heights "
-            "confirm the target for three frames. The robot may align its two "
-            "lower ToFs, but pickup and unloading are NOT verified or automatic. "
+            "while the Teensy tries a sonar-checked detour. Keep the app connected "
+            "for telemetry and remote STOP; firmware stops on invalid pose, a "
+            "blocked route, or its 120 s run limit. "
+            "At a planned weight site, repeated upper/lower ToF evidence can trigger "
+            "brief, heading-bounded turns that center the projected target in front "
+            "of the robot. It then pauses "
+            "for operator inspection; pickup, sorting and unloading are not automatic. "
             "Keep a clear stop zone around the robot.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1978,8 +2197,8 @@ class RobotDebugGUI(QMainWindow):
         self.mission_view.canvas.robot_pose = None
         self.route_last_frame_monotonic = None
         self.route_started_at = time.monotonic()
-        self.route_awaiting_pose = True
-        self.route_awaiting_limit = True
+        self.route_awaiting_pose = False
+        self.route_awaiting_limit = False
         self.route_last_obstacle_frame = None
         self.route_previous_obstacle_points = []
         self.route_older_obstacle_points = []
@@ -1993,8 +2212,45 @@ class RobotDebugGUI(QMainWindow):
         self.route_weight_candidate_count = 0
         self.mission_view.model.live_obstacles.clear()
         self.mission_view.refresh_live_obstacles()
-        self.route_follower = RouteFollower(points)
-        self.route_weight_tracker = WeightTracker()
+        layout = self.mission_view.model
+        obstacles = []
+        x0, y0, x1, y1 = layout.opposite_home()
+        obstacles.append({
+            "x": (x0 + x1) / 2, "y": (y0 + y1) / 2,
+            "width": x1 - x0, "depth": y1 - y0,
+            "rotation": 0, "circular": False,
+        })
+        for item in layout.obstacles:
+            obstacles.append({
+                "x": float(item["x"]), "y": float(item["y"]),
+                "width": float(item["width"]),
+                "depth": float(item.get("height", item["width"])),
+                "rotation": float(item.get("rotation", 0)),
+                "circular": item.get("kind") == "tube",
+            })
+        # Dummy weight markers are no-go regions, whereas real weights remain
+        # target sites that the route approaches.
+        obstacles.extend({
+            "x": float(item["x"]), "y": float(item["y"]),
+            "width": 240, "depth": 240,
+            "rotation": 0, "circular": True,
+        } for item in layout.weights if item.get("dummy"))
+        if len(obstacles) > 24:
+            self.mission_view.set_follow_status(
+                f"Cannot upload: map has {len(obstacles)} no-go regions; Teensy supports 24."
+            )
+            return
+        self.route_follower = None
+        self.route_weight_tracker = None
+        self.robot_mission_armed = True
+        self.robot_mission_start_sent = False
+        self.robot_mission_start_sent_at = None
+        self.robot_mission_upload_started = time.monotonic()
+        self.robot_mission_commit_acknowledged = False
+        self.robot_mission_last_error = None
+        self._mission_site_ids = {}
+        self.telemetry["mission.ready"] = False
+        self.telemetry["mission.state"] = "UPLOADING"
         self.drive_speed_slider.blockSignals(True)
         self.drive_speed_slider.setValue(100)
         self.drive_speed_slider.blockSignals(False)
@@ -2002,13 +2258,12 @@ class RobotDebugGUI(QMainWindow):
         self.parameter_values.pop("drive.max_percent", None)
         self.bluetooth.set_parameter("drive.max_percent", 100)
         self.recorder.record_parameter("drive.max_percent", 100)
-        self.mission_view.set_follow_status("Waiting for drive-limit confirmation and fresh pose…", active=True, waypoint=0)
-        self.add_log("INFO", f"Route armed: {len(points)} waypoints; requested 100% drive limit")
+        self.mission_view.set_follow_status("Uploading map and route to Teensy…", active=True, waypoint=0)
+        self.add_log("INFO", f"Uploading robot-side mission: {len(points)} waypoints, {len(obstacles)} map regions")
         self.recorder.record_log(
             "MISSION",
-            f"Route armed: {len(points)} waypoints; waiting for drive-limit confirmation and fresh pose",
+            f"Uploading robot-side route: {len(points)} waypoints and {len(obstacles)} map regions",
         )
-        layout = self.mission_view.model
         self.recorder.record_log(
             "MISSION_MAP",
             json.dumps({
@@ -2021,11 +2276,65 @@ class RobotDebugGUI(QMainWindow):
                 "sensors": self.arena_view.model.sensor_specs,
             }, separators=(",", ":")),
         )
+        self.execute_command("mission_begin", {
+            "count": len(points),
+            "start_x_mm": float(layout.start[0]),
+            "start_y_mm": float(layout.start[1]),
+            "start_heading_deg": float(layout.heading_deg),
+            "robot_radius_mm": float(layout.robot_radius_mm),
+            "margin_mm": float(layout.margin_mm),
+            "encoder0_mm_per_count": float(self.arena_view.model.left_mm_per_count),
+            "encoder1_mm_per_count": float(self.arena_view.model.right_mm_per_count),
+            "encoder0_reversed": bool(self.arena_view.model.invert_left),
+            "encoder1_reversed": bool(self.arena_view.model.invert_right),
+        })
+        # Mission avoidance runs onboard, so upload the same editable mounting
+        # geometry used by Arena View to draw sensor rays. Coordinates are
+        # robot-local: +x right, +y forward, angle 0 forward / +90 right.
+        for spec in self.arena_view.model.sensor_specs:
+            if spec.get("kind") not in ("point", "matrix", "ultrasonic"):
+                continue
+            mount = {
+                "key": str(spec.get("key", "")),
+                "x_mm": float(spec.get("x", 0)),
+                "y_mm": float(spec.get("y", 0)),
+                "angle_deg": float(spec.get("angle", 0)),
+                "height_mm": float(spec.get("height_mm", 0)),
+                "enabled": bool(spec.get("enabled", True)),
+            }
+            if spec.get("kind") == "matrix":
+                mount["matrix_fov_deg"] = float(self.arena_view.model.matrix_fov_deg)
+                mount["matrix_mirrored"] = bool(self.arena_view.model.matrix_mirrored)
+            self.execute_command("mission_sensor", mount)
+        for index, obstacle in enumerate(obstacles):
+            self.execute_command("mission_obstacle", {"index": index, **obstacle})
+        for offset in range(0, len(points), 8):
+            flat = []
+            for point in points[offset:offset + 8]:
+                site_key = (round(float(point.get("target_x", -1))),
+                            round(float(point.get("target_y", -1))))
+                site_ids = getattr(self, "_mission_site_ids", {})
+                if point.get("site_search", point.get("target", False)):
+                    if site_key not in site_ids:
+                        site_ids[site_key] = len(site_ids) + 1
+                    self._mission_site_ids = site_ids
+                    flags = 1 | ((site_ids[site_key] & 0x7F) << 1)
+                else:
+                    flags = 0
+                flat.extend((round(float(point["x"])), round(float(point["y"])), flags))
+            self.execute_command("mission_chunk", {"offset": offset, "points": flat})
+        self.execute_command("mission_commit", {})
 
     def _stop_mission_route(self, reason="Stopped", *, send_stop=True):
-        if self.route_follower is None:
+        robot_mission = getattr(self, "robot_mission_armed", False)
+        if self.route_follower is None and not robot_mission:
             return
         self.route_follower = None
+        self.robot_mission_armed = False
+        self.robot_mission_start_sent = False
+        self.robot_mission_start_sent_at = None
+        self.robot_mission_upload_started = None
+        self.robot_mission_commit_acknowledged = False
         self.route_weight_tracker = None
         self.route_awaiting_pose = False
         self.route_awaiting_limit = False
@@ -2037,13 +2346,97 @@ class RobotDebugGUI(QMainWindow):
         if point_tof_guard is not None:
             point_tof_guard.reset()
         if send_stop and self.bluetooth.is_connected():
-            self.bluetooth.send_command("stop")
-            self.recorder.record_command("stop", {})
+            if robot_mission:
+                self.execute_command("mission_stop", {})
+            else:
+                self.bluetooth.send_command("stop")
+                self.recorder.record_command("stop", {})
+        checkpoint = getattr(self, "mission_checkpoint", None)
+        if checkpoint is not None:
+            checkpoint.hide()
         self.mission_view.set_follow_status(f"Route stopped: {reason}")
         self.add_log("WARN", f"Route stopped: {reason}")
         self.recorder.record_log("MISSION_STOP", f"Route stopped: {reason}")
 
     def _mission_route_step(self):
+        if getattr(self, "robot_mission_armed", False):
+            now = time.monotonic()
+            if not self._drive_controls_available():
+                self._stop_mission_route("Drive control or Debug Mode lost", send_stop=False)
+                return
+
+            state = str(self.telemetry.get("mission.state", ""))
+            reason = str(self.telemetry.get("mission.reason", ""))
+            checkpoint = getattr(self, "mission_checkpoint", None)
+            if checkpoint is not None:
+                checkpoint.setVisible(state == "WEIGHT_SITE")
+            if state == "WEIGHT_SITE" and hasattr(self, "mission_checkpoint_label"):
+                self.mission_checkpoint_label.setText(
+                    "Weight detected and the robot is stopped. Check/remove the target, "
+                    "then use RESUME WEIGHT ROUTE to continue. " + reason
+                )
+            if (self.robot_mission_commit_acknowledged
+                    and self.telemetry.get("mission.ready") is True and state == "READY"
+                    and not self.robot_mission_start_sent):
+                if number(self.parameter_values.get("drive.max_percent")) != 100:
+                    if (self.robot_mission_upload_started is not None
+                            and now - self.robot_mission_upload_started > 8):
+                        self._stop_mission_route("Drive limit 100% was not confirmed")
+                    return
+                self.execute_command("mission_start", {})
+                self.robot_mission_start_sent = True
+                self.robot_mission_start_sent_at = now
+                self.mission_view.set_follow_status("Start sent; waiting for Teensy status…", active=True)
+            elif (self.robot_mission_upload_started is not None
+                  and now - self.robot_mission_upload_started > 12
+                  and (not self.robot_mission_commit_acknowledged
+                       or self.telemetry.get("mission.ready") is not True)):
+                detail = self.robot_mission_last_error or reason or "Teensy did not acknowledge the route"
+                self._stop_mission_route(f"Mission upload failed: {detail}")
+                return
+
+            waypoint = int(number(self.telemetry.get("mission.waypoint_index")) or 0)
+            x, y, heading = (number(self.telemetry.get(key)) for key in (
+                "mission.pose_x_mm", "mission.pose_y_mm", "mission.heading_deg"))
+            if x is not None and y is not None and heading is not None:
+                self.mission_view.set_robot_pose_world(x, y, heading)
+
+            if state == "WEIGHT_SITE":
+                self.mission_view.set_follow_status(
+                    f"Weight site checkpoint. Inspect/remove the target, then press RESUME WEIGHT ROUTE. {reason}",
+                    active=True, paused=True, waypoint=waypoint,
+                )
+            elif state in ("FOLLOWING", "TURNING", "DETOUR", "CHECKING_OBSTACLE",
+                           "SEARCHING_WEIGHT", "CENTERING_WEIGHT", "BLOCKED"):
+                count = self.telemetry.get("mission.waypoint_count", "?")
+                self.mission_view.set_follow_status(
+                    f"Robot-side {state.lower().replace('_', ' ')} · waypoint {waypoint + 1}/{count} · {reason}",
+                    active=True, waypoint=waypoint,
+                )
+            elif state == "COMPLETE":
+                self.robot_mission_armed = False
+                self.robot_mission_start_sent = False
+                self.robot_mission_start_sent_at = None
+                self.robot_mission_upload_started = None
+                self.mission_view.set_follow_status(f"Mission complete. {reason}")
+            elif state == "STOPPED":
+                self.robot_mission_armed = False
+                self.robot_mission_start_sent = False
+                self.robot_mission_start_sent_at = None
+                self.robot_mission_upload_started = None
+                self.mission_view.set_follow_status(f"Mission stopped. {reason}")
+            elif (state == "READY" and self.robot_mission_start_sent
+                  and self.robot_mission_start_sent_at is not None
+                  and now - self.robot_mission_start_sent_at > 2.5):
+                self._stop_mission_route(
+                    f"Teensy rejected mission start: {self.robot_mission_last_error or reason}"
+                )
+            elif not (self.robot_mission_start_sent and state == "READY"):
+                self.mission_view.set_follow_status(
+                    f"Uploading robot-side route… {reason}", active=True, waypoint=waypoint
+                )
+            return
+
         follower = self.route_follower
         if follower is None:
             return
@@ -2120,7 +2513,9 @@ class RobotDebugGUI(QMainWindow):
         if point_tof_guard is None:
             point_tof_guard = PointTofStopGuard()
             self.route_point_tof_guard = point_tof_guard
-        point_tof_readings = RobotDebugGUI._route_point_tof_readings(frame, model)
+        point_tof_readings = filter_uncorroborated_front_tofs(
+            RobotDebugGUI._route_point_tof_readings(frame, model), frame,
+        )
         point_tof_guard_state = point_tof_guard.observe(
             point_tof_readings, self.route_last_frame_monotonic,
             threshold_mm=EMERGENCY_STOP_MM,
@@ -3013,6 +3408,7 @@ class RobotDebugGUI(QMainWindow):
             self._update_drum_controls()
             self._update_magnet_controls()
             self._update_servo_controls()
+            self._update_exploration_controls()
 
         else:
             self.connected_since_monotonic = None
@@ -3020,6 +3416,9 @@ class RobotDebugGUI(QMainWindow):
             self._stop_mission_route("Disconnected", send_stop=False)
             self.route_last_frame_monotonic = None
             self.robot_debug_mode = False
+            self.explore_command_available = False
+            self.telemetry["explore.active"] = False
+            self._stop_exploration(send_command=False)
             self._stop_drum_hold()
             self._stop_servo_test(send_command=False)
             self.drum_command_available = False
@@ -3031,6 +3430,7 @@ class RobotDebugGUI(QMainWindow):
             self._update_drum_controls()
             self._update_magnet_controls()
             self._update_servo_controls()
+            self._update_exploration_controls()
             self._set_magnet_visual(False, "OFF · DISCONNECTED (FIRMWARE FAILSAFE)", "bad")
             if self.recorder.is_recording:
                 self.stop_recording()
@@ -3170,6 +3570,8 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry[
             name
         ] = value
+        if name.startswith("explore."):
+            self._update_exploration_controls()
         if name == "magnet.on" and isinstance(value, bool):
             self._magnet_reported_state(value)
         if name == "servo.pin" and isinstance(value, (int, float)):
@@ -3657,6 +4059,11 @@ class RobotDebugGUI(QMainWindow):
         if name == "drive_set":
             self.drive_command_available = True
             self._update_drive_controls()
+        if name in ("explore_start", "explore_stop"):
+            self.explore_command_available = True
+            self._update_exploration_controls()
+            # Explore has dedicated Start/Stop controls and an internal lease.
+            return
         if name == "drum_set":
             self.drum_command_available = True
             self._update_drum_controls()
@@ -3714,10 +4121,14 @@ class RobotDebugGUI(QMainWindow):
     ):
         if name == "stop":
             self._stop_mission_route("STOP pressed", send_stop=False)
-        elif name in ("drive_set", "navigation_set"):
+            self._stop_exploration(send_command=False, reason="STOPPED · STOP COMMAND SENT")
+        elif name in ("drive_set", "drum_set", "navigation_set", "mission_begin",
+                      "mission_start", "mission_resume"):
             self._stop_mission_route("Another drive command took control")
+            self._stop_exploration(send_command=False)
         elif name == "set_debug_mode" and arguments.get("enabled") is False:
             self._stop_mission_route("Debug Mode exited")
+            self._stop_exploration(send_command=False, reason="STOPPED · DEBUG MODE EXITED")
         if name in ("stop", "set_debug_mode") and (
             name == "stop" or arguments.get("enabled") is False
         ):
@@ -3783,6 +4194,10 @@ class RobotDebugGUI(QMainWindow):
         level: str,
         message: str,
     ):
+        if (self.robot_mission_armed
+                and "Robot-side route uploaded and validated" in str(message)):
+            self.robot_mission_commit_acknowledged = True
+
         self.recorder.record_log(
             level,
             message,
@@ -3850,6 +4265,8 @@ class RobotDebugGUI(QMainWindow):
             self.robot_debug_mode = bool(debug_enabled)
             if not self.robot_debug_mode:
                 self._stop_mission_route("Debug Mode exited", send_stop=False)
+                self._stop_exploration(send_command=False,
+                                       reason="STOPPED · DEBUG MODE EXITED")
                 if self.servo_held:
                     self._stop_servo_test(send_command=False)
             self._update_drive_controls()
@@ -3860,6 +4277,7 @@ class RobotDebugGUI(QMainWindow):
             if not self.robot_debug_mode and self.magnet_is_on:
                 self._set_magnet_visual(False, "OFF · DEBUG MODE EXITED", "ok")
             self._update_magnet_controls()
+            self._update_exploration_controls()
 
         magnet_state = state.get("magnet_on")
         if isinstance(magnet_state, bool):
@@ -3891,6 +4309,16 @@ class RobotDebugGUI(QMainWindow):
         message: str,
     ):
         self.protocol_error_count += 1
+        if (self.explore_requested
+                and ("explore_start" in str(message).lower()
+                     or "start rejected" in str(message).lower())):
+            self._stop_exploration(
+                send_command=False,
+                reason=f"START REJECTED · {message}",
+            )
+            theme.set_pill_state(self.explore_status_label, "bad")
+        if self.robot_mission_armed:
+            self.robot_mission_last_error = str(message)
 
         self.add_log(
             "ERROR",

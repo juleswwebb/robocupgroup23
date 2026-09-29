@@ -17,13 +17,13 @@ MAX_CROSSTRACK_MM = 250.0
 MAX_ROUTE_MM = 14000.0
 MAX_SEGMENT_MM = 2500.0
 MIN_MOVING_PERCENT = 80
-# Operator-requested close-obstacle threshold. Detections beyond this range
-# are not mapped as generic navigation obstacles; this is intentionally very
-# close and is not a safe substitute for a physical emergency stop.
-EMERGENCY_STOP_MM = 20
+# The sensor boards sit at the robot perimeter, so only readings strictly
+# below 50 mm are considered a close obstacle. This is not a replacement for
+# a physical emergency stop.
+EMERGENCY_STOP_MM = 50
 MAP_REQUIRED_MM = 800
-MAX_POINT_TOF_MAP_MM = 20
-MAX_MATRIX_OBSTACLE_MM = 20
+MAX_POINT_TOF_MAP_MM = EMERGENCY_STOP_MM
+MAX_MATRIX_OBSTACLE_MM = EMERGENCY_STOP_MM
 TURN_ENTER_DEG = 24.0
 TURN_EXIT_DEG = 12.0
 
@@ -69,7 +69,7 @@ class PointTofStopGuard:
             reading = readings.get(self.sensor_name)
             if not isinstance(reading, (int, float)) or not math.isfinite(reading):
                 return "pending"
-            if reading <= threshold_mm:
+            if reading < threshold_mm:
                 self.close_frames += 1
                 self.clear_frames = 0
                 return self._state()
@@ -86,7 +86,7 @@ class PointTofStopGuard:
             close_hit = next((
                 (str(name), value) for name, value in readings.items()
                 if isinstance(value, (int, float)) and math.isfinite(value)
-                and value <= threshold_mm
+                and value < threshold_mm
             ), None)
         if close_hit is None:
             return "clear"
@@ -104,6 +104,40 @@ class PointTofStopGuard:
         if self.close_frames >= self.required_frames:
             return "confirmed"
         return "pending" if self.sensor_name is not None else "clear"
+
+
+def matrix_confirms_near_front(frame, *, max_range_mm=180.0):
+    """Require an agreeing neighbouring pair in the array's upper field.
+
+    Rows 4-7 are excluded because this installation commonly sees the floor
+    and chassis there. Adjacent pixels with similar short ranges provide
+    spatial evidence that a frontal target exists, unlike one point-ToF value.
+    """
+    if not isinstance(frame, dict):
+        return False
+    grid = []
+    for row in range(4):
+        for col in range(8):
+            value = frame.get(f"tof.array.r{row}c{col}")
+            if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) and 0 < value <= max_range_mm):
+                grid.append((row, col, float(value)))
+    by_cell = {(row, col): value for row, col, value in grid}
+    for row, col, value in grid:
+        for neighbour in ((row, col + 1), (row + 1, col)):
+            other = by_cell.get(neighbour)
+            if other is not None and abs(value - other) <= 180.0:
+                return True
+    return False
+
+
+def filter_uncorroborated_front_tofs(readings, frame):
+    """Keep straight-ahead top ToFs out of emergency votes without array proof."""
+    filtered = dict(readings) if isinstance(readings, dict) else {}
+    if not matrix_confirms_near_front(frame):
+        filtered.pop("xshut7", None)
+        filtered.pop("xshut8", None)
+    return filtered
 
 
 def mission_to_local(start, heading_deg, point):
@@ -140,7 +174,7 @@ def matrix_obstacle_points(frame, arena_model, layout):
         values = [frame.get(f"tof.array.r{row}c{col}") for row in range(4)]
         ranges = sorted(float(v) for v in values
                         if isinstance(v, (int, float)) and not isinstance(v, bool)
-                        and math.isfinite(v) and 0 < v <= MAX_MATRIX_OBSTACLE_MM)
+                        and math.isfinite(v) and 0 < v < MAX_MATRIX_OBSTACLE_MM)
         # Even one valid zone can be a small obstacle. The GUI requires it to
         # recur near the same world point on the next frame before mapping it.
         if not ranges:
@@ -179,7 +213,7 @@ def point_tof_obstacle_points(frame, arena_model, layout, *, excluded_keys=()):
         distance = frame.get(spec.get("signal", ""))
         if (isinstance(distance, bool) or not isinstance(distance, (int, float))
                 or not math.isfinite(distance)
-                or not 0 < distance <= MAX_POINT_TOF_MAP_MM):
+                or not 0 < distance < MAX_POINT_TOF_MAP_MM):
             continue
         ox, oy, angle = arena_model._origin_and_angle(spec)
         local_point = (ox + distance * math.cos(angle),
@@ -283,8 +317,8 @@ class RouteFollower:
         self.index = 0
         # Operator's measured straight-running trim. Steering nudges stay
         # within the 80..100% range needed to keep both wheels moving.
-        self.left_speed = 85
-        self.right_speed = 100
+        self.left_speed = 100
+        self.right_speed = 85
         self.turn = min(100, max(MIN_MOVING_PERCENT, int(turn_percent)))
         self.start_pose = start_pose
         self.last_pose = None
@@ -307,7 +341,7 @@ class RouteFollower:
         # A 0 mm threshold disables this guard; positive thresholds stop at or
         # below the configured distance. Confirmed map obstacles remain active.
         if (EMERGENCY_STOP_MM > 0 and front_mm is not None
-                and front_mm <= EMERGENCY_STOP_MM):
+                and front_mm < EMERGENCY_STOP_MM):
             return DriveDecision(0, 0, "FAULT", f"Obstacle at {front_mm:.0f} mm", fault=True)
         pose = (x, y)
         if self.last_pose is not None and math.dist(pose, self.last_pose) > 350:

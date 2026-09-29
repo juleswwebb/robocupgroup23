@@ -286,7 +286,7 @@ class MissionPlannerView(QWidget):
         clear_live.clicked.connect(self._clear_live_obstacles)
         form.addRow(clear_live)
         body.addWidget(panel); root.addLayout(body, 1)
-        self.status = QLabel("Plan a route, then FOLLOW to command the robot from this app. Marked start and heading must match the physical robot.")
+        self.status = QLabel("Plan here, upload the map and route, then the Teensy follows it onboard. Marked start and heading must match the physical robot.")
         self.status.setWordWrap(True); root.addWidget(self.status)
         self.follow_status = QLabel("Route follower idle · robot stays stopped")
         self.follow_status.setWordWrap(True); root.addWidget(self.follow_status)
@@ -372,15 +372,16 @@ class MissionPlannerView(QWidget):
             real = sum(not item["dummy"] for item in self.model.weights)
             self.status.setText(f"Desktop route: {len(self.model.route)} waypoints through {real} real weights"
                                 + (" and back home" if self.return_home.isChecked() else "")
-                                + ". Ready for supervised desktop following.")
+                                + ". Ready to upload and follow onboard on the Teensy.")
         else:
             self.status.setText("Route unavailable: " + self.model.error)
         self.follow_button.setEnabled(bool(self.model.route))
         self.canvas.update()
 
-    def set_follow_status(self, text, *, active=False, waypoint=None):
+    def set_follow_status(self, text, *, active=False, paused=False, waypoint=None):
         self.follow_status.setText(text)
-        self.follow_button.setEnabled(bool(self.model.route) and not active)
+        self.follow_button.setText("RESUME WEIGHT ROUTE" if paused else "FOLLOW ROUTE")
+        self.follow_button.setEnabled(bool(self.model.route) and (not active or paused))
         self.stop_button.setEnabled(active)
         self.canvas.active_waypoint = waypoint if active else None
         self.canvas.update()
@@ -408,4 +409,9 @@ class MissionPlannerView(QWidget):
             sy + forward_mm * math.sin(theta) + right_mm * math.cos(theta),
             self.model.heading_deg + 90 - math.degrees(heading_rad),
         )
+        self.canvas.update()
+
+    def set_robot_pose_world(self, x_mm, y_mm, heading_deg):
+        """Display the Teensy's arena-frame pose directly on the planner map."""
+        self.canvas.robot_pose = (float(x_mm), float(y_mm), float(heading_deg))
         self.canvas.update()

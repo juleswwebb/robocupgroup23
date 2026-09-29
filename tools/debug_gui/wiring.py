@@ -141,7 +141,7 @@ def _build_ports() -> list[Port]:
         ports.append(Port(
             f"xshut{logical}", f"ToF channel IO{io_pin} · SX1509 0x71", "xshut",
             signals=((f"tof.xshut{logical}", "Distance"),),
-            expects="vl53l1x", pins=("D18", "D19"), bus="wire",
+            expects="vl53l1x", pins=("D18", "D19"), bus="wire0",
         ))
 
     i2c_devices = {
@@ -159,14 +159,19 @@ def _build_ports() -> list[Port]:
             ("tof.array_valid_zones", "Valid zones"),
         )),
     }
-    buses = (("wire", "Wire", ("D18", "D19")),
+    buses = (("wire0", "Wire", ("D18", "D19")),
              ("wire1", "Wire1", ("D16", "D17")),
              ("wire2", "Wire2", ("D24", "D25")))
-    # Only Wire1 is read for these devices today.
-    read_bus = "wire1"
+    # Match the current physical layout: the BNO055 is on Wire/bus 0, while
+    # the 8x8 array (and optional colour sensor) are on Wire1/bus 1.
+    read_bus_by_kind = {
+        "imu": "wire0",
+        "colour": "wire1",
+        "tof_8x8": "wire1",
+    }
     for bus_id, bus_name, pins in buses:
         for address, (kind, signals) in i2c_devices.items():
-            is_read = bus_id == read_bus
+            is_read = bus_id == read_bus_by_kind[kind]
             ports.append(Port(
                 f"{bus_id}_0x{address:02x}",
                 f"{bus_name} @ 0x{address:02X}  ·  pins {pins[0][1:]}/{pins[1][1:]}",
@@ -307,7 +312,7 @@ def default_devices() -> list[Device]:
         Device("Servo", "servo", "servo_test_d20"),
     ]
     devices += [
-        Device("IMU", "imu", "wire1_0x28"),
+        Device("IMU", "imu", "wire0_0x28"),
         Device("Optical flow", "optical_flow", "spi_cs10"),
         Device("Inductive sensor", "inductive", "a0"),
         Device("Encoder 0", "encoder", "encoder_2_3"),

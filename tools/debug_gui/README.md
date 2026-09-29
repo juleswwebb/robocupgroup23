@@ -127,6 +127,20 @@ navigation. Autonomous navigation is disabled at boot and the global STOP,
 manual drive, Debug Mode exit, invalid IMU, missing range data and turn timeout
 all return the drive outputs to neutral.
 
+The Dashboard also has a new **Autonomous Explore** control for arena-free
+testing. It starts robot-side exploration directly; no placed weights or map
+upload is involved. The Teensy drives at the configured straight trim (default
+100% left / 85% right), keeps the D28/D29 drum motors at -100% / -100%, and
+uses multi-pixel 8×8 TOF evidence to turn around a detected front obstacle.
+The inward-angled top/bottom VL53 pairs are used for three-sample weight
+detection, brief centering turns, and a forward pass through the target. The
+run requires Debug Mode, a drive limit of at least 80%, and valid 8×8 or
+straight-ahead range data; IMU/encoder calibration and Mission Planner setup
+are not prerequisites. STOP, Debug Mode exit, manual motor takeover, or a
+700 ms lost app keepalive neutralises the drive and drum. Avoidance turns at a
+coherent 8×8 return around 420 mm; this causes a turn, not a latched stop.
+Hardware behavior is untested, so begin supervised in a clear area.
+
 The separate **Mission Planner** tab follows Group 7's newer pre-laid arena
 workflow: a 4.9 m × 2.4 m arena with green/blue homes, an opposite-home no-go
 zone, draggable start/real weights/dummy weights/walls/ramps/tubes, adjustable
@@ -145,8 +159,8 @@ start and arrow. The app must remain open and connected; it sends fresh
 commands every 100 ms while the Teensy's independent 300 ms drive watchdog
 remains active. Each moving wheel is commanded at 80–100% because this
 drivetrain stalls below 80%; route start requests and waits for confirmation
-of a 100% firmware drive limit. Straight travel commands default to 85% left
-and 100% right; small heading corrections stay within the 80–100% moving
+of a 100% firmware drive limit. Straight travel commands default to 100% left
+and 85% right; small heading corrections stay within the 80–100% moving
 range. A healthy all-out-of-range 8×8 frame is clear space and permits
 movement; a failed/missing frame-health signal stops the route, so upload the
 matching firmware. Route obstacle mapping reads all six installed VL53L1X
@@ -170,8 +184,8 @@ pose, then resumes only with a clear detour. If that pose overlaps only the
 extra planning buffer around a live sensor return or arena edge, a clear first
 leg moving away is allowed; otherwise the detour starts with a short waypoint
 out of that buffer. An actual robot-footprint overlap remains a hard failure.
-The current operator-set obstacle mapping and immediate-stop threshold is only
-20 mm. A 430 mm return is therefore visible in Arena View but does not create
+The current operator-set obstacle mapping and immediate-stop threshold is
+strictly below 50 mm of raw sensor range. A 430 mm return is therefore visible in Arena View but does not create
 a Mission Planner detour. This is a testing setting, not a verified stopping
 distance for a robot moving at 80–100%.
 No safe detour, repeated replans, missing/stale telemetry, pose jumps, excess
@@ -196,7 +210,7 @@ arm the panel, click the app window, then use **W/S** or **↑/↓** for
 forward/reverse and **A/D** or **←/→** to turn. Space or releasing every drive
 key sends neutral. **Left scale** and **Right scale** set each side as a
 percentage of the speed-limit slider during forward/reverse travel; e.g.
-100% left and 98% right gives 100/98 at full speed or 60/59 at 60% speed.
+100% left and 85% right gives 100/85 at full speed or 60/51 at 60% speed.
 Pure turns remain symmetric. The scales are saved locally in the app and
 never arm the motors on startup. The Teensy
 also makes both drive outputs neutral after 300 ms without a new command.

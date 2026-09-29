@@ -22,6 +22,45 @@ class Value:
 
 
 class DriveControlTests(unittest.TestCase):
+    def test_explore_start_is_direct_and_does_not_require_a_mission(self):
+        sent = []
+        actions = []
+        gui = SimpleNamespace(
+            _exploration_controls_available=lambda: True,
+            _stop_mission_route=lambda reason: actions.append(("mission", reason)),
+            _set_drive_armed=lambda armed: actions.append(("keyboard", armed)),
+            _stop_drum_hold=lambda: actions.append(("drum", "neutral")),
+            explore_requested=False,
+            explore_seen_active=False,
+            explore_start_sent_at=None,
+            bluetooth=SimpleNamespace(
+                send_command=lambda *args, **kwargs: sent.append((args, kwargs))
+            ),
+            recorder=SimpleNamespace(record_command=lambda *_args: None),
+            add_log=lambda *_args: None,
+            _update_exploration_controls=lambda: None,
+        )
+        RobotDebugGUI._start_exploration(gui)
+        self.assertEqual(sent, [(("explore_start",), {})])
+        self.assertTrue(gui.explore_requested)
+        self.assertEqual([item[0] for item in actions], ["mission", "keyboard", "drum"])
+
+    def test_explore_keepalive_is_refreshed_over_the_connected_link(self):
+        sent = []
+        gui = SimpleNamespace(
+            explore_requested=True,
+            telemetry={"explore.active": True},
+            bluetooth=SimpleNamespace(
+                is_connected=lambda: True,
+                send_command=lambda *args, **kwargs: sent.append((args, kwargs)),
+            ),
+            robot_debug_mode=True,
+            explore_command_available=True,
+            last_telemetry_monotonic=time.monotonic(),
+        )
+        RobotDebugGUI._send_explore_keepalive(gui)
+        self.assertEqual(sent, [(("explore_keepalive",), {})])
+
     def test_servo_pulse_test_stops_to_neutral_on_release(self):
         sent = []
         gui = SimpleNamespace(

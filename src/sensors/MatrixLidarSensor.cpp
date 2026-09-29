@@ -42,6 +42,7 @@ void MatrixLidarSensor::update() {
     }
     lastPollMs_ = now;
     lastReadOk_ = (sensor_.getAllData(grid_) == 0);
+    if (lastReadOk_) lastSuccessfulReadMs_ = now;
 }
 
 uint16_t MatrixLidarSensor::getDistanceMM() const {

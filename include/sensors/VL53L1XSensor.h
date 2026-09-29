@@ -28,7 +28,7 @@ public:
     // False if begin() never succeeded, or the last reading wasn't a valid range.
     bool isValid() const override {
         return initialized_ && hasSample_ && (millis() - lastSampleAt_ <= 250) &&
-               (noReturn_ || lastStatus_ == 0);
+               !noReturn_ && lastStatus_ == VL53L1X::RangeValid;
     }
     const char* getName() const override { return name_; }
     bool isInitialized() const { return initialized_; }

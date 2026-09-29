@@ -111,9 +111,9 @@
 // PMW3901 optical flow sensor, default SPI bus (MOSI=11, MISO=12, SCK=13).
 #define OPTICAL_FLOW_CS_PIN 10
 
-// BNO055 IMU (SEN0253 combo board) on I2C bus 1 (Wire1).
+// BNO055 IMU (SEN0253 combo board) on I2C bus 0 (Wire, pins 18/19).
 #define IMU_I2C_ADDRESS 0x28
-#define IMU_I2C_BUS Wire1
+#define IMU_I2C_BUS Wire
 
 // LJ18A3-8-Z/BY inductive proximity sensor (metal detection).
 #define INDUCTIVE_PIN A0
@@ -127,6 +127,13 @@
 #define ENCODER1_PIN_A 4
 #define ENCODER1_PIN_B 5
 #define ENCODER_USE_INTERNAL_PULLUPS 1
+// Measured straight-line calibration used by the onboard Mission Planner
+// follower. GUI calibration values are uploaded with each mission and can
+// override these defaults for that run.
+#define ENCODER0_MM_PER_COUNT (3635.0f / 41153.0f)
+#define ENCODER1_MM_PER_COUNT (3635.0f / 42224.0f)
+#define ENCODER0_REVERSED 0
+#define ENCODER1_REVERSED 1
 
 // D20 is the servo test output; D21 is unused by this servo. D28/D29 remain
 // dedicated to the left/right drum motor drivers.

@@ -109,7 +109,7 @@ class WeightTargetingTests(unittest.TestCase):
             0, 0, math.pi / 2, 200, 1.3, weight=evidence,
             target_leg=True, search_waypoint=True)
         self.assertEqual(decision.state, "FORWARD")
-        self.assertEqual((decision.left, decision.right), (85, 100))
+        self.assertEqual((decision.left, decision.right), (100, 85))
 
     def test_aligned_target_stops_without_claiming_pickup(self):
         evidence = self._third()
@@ -226,7 +226,7 @@ class WeightTargetingTests(unittest.TestCase):
         self.assertEqual((still.left, still.right), (0, 0))
         go = follower.step(0, 0, math.pi / 2, None, 1.36,
                            target_leg=True)
-        self.assertEqual((go.left, go.right), (85, 100))
+        self.assertEqual((go.left, go.right), (100, 85))
 
 
 if __name__ == "__main__":

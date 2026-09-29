@@ -28,6 +28,7 @@
 #include "Inductive.h"
 #include "Encoders.h"
 #include "Navigation.h"
+#include "ExplorationMode.h"
 #include "MissionNavigation.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
@@ -100,6 +101,8 @@
 #define ENCODERS_NUM_EXECUTE               -1
 #define NAVIGATION_UPDATE_PERIOD            50
 #define NAVIGATION_NUM_EXECUTE              -1
+#define EXPLORATION_UPDATE_PERIOD           20
+#define EXPLORATION_NUM_EXECUTE             -1
 
 // Pin definitions
 #define IO_POWER  49
@@ -182,6 +185,8 @@ Task tUpdate_servo_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUT
 Task tUpdate_magnet_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &magnet_control_update);
 Task tUpdate_navigation(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &navigation_update);
 Task tUpdate_mission(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &mission_update);
+Task tUpdate_exploration(EXPLORATION_UPDATE_PERIOD, EXPLORATION_NUM_EXECUTE,
+                         &exploration_mode_update);
 
 Scheduler taskManager;
 
@@ -234,7 +239,9 @@ static void on_debug_json_mode_changed(bool json_active) {
   if (json_active) {
     set_sensor_debug_prints_enabled(false);
   } else {
+    exploration_mode_stop("Stopped: debug protocol disconnected");
     drum_control_stop();
+    drive_control_stop();
     servo_control_stop();
     set_sensor_debug_prints_enabled(!testMode);
   }
@@ -295,6 +302,7 @@ static void handle_console_command(const char* command, const char* args) {
     }
     servo_control_print();
   } else if (strcmp(command, "drive") == 0) {
+    exploration_mode_stop("Stopped: console drive command took control");
     if (strcmp(args, "stop") == 0) {
       drive_control_stop();
     } else {
@@ -342,7 +350,7 @@ void setup() {
   distance_sensors_init(); // brings up Wire + all TOF sensors
   sensors_colour_init();   // brings up Wire1 colour sensor
   optical_flow_init();     // brings up SPI + the optical flow sensor
-  imu_init();              // brings up the Wire1 IMU (BNO055)
+  imu_init();              // brings up the Wire IMU on I2C bus 0 (BNO055)
   inductive_init();        // brings up the inductive proximity sensor pin
   encoders_init();         // brings up the encoder pins + interrupts
   drive_control_init();    // D7/D8 drive ESCs; starts safely at neutral
@@ -351,6 +359,7 @@ void setup() {
   servo_control_init();    // D20 servo/pulse output, neutral at boot
   navigation_init();       // autonomous navigation remains disabled at boot
   mission_init();          // uploaded missions are invalid and stopped at boot
+  exploration_mode_init(); // arena-free exploration remains disabled at boot
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
 #if BLUETOOTH_ENABLED
@@ -403,6 +412,7 @@ void task_init() {
   taskManager.addTask(tUpdate_debug_protocol);
   taskManager.addTask(tUpdate_navigation);
   taskManager.addTask(tUpdate_mission);
+  taskManager.addTask(tUpdate_exploration);
   //
   // The stub modules (ultrasonic/infrared/colour/motors/weights/base) don't
   // have real logic yet - just a Serial.println placeholder each - so

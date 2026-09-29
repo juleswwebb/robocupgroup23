@@ -104,6 +104,16 @@ QGroupBox::title {{
     letter-spacing: 1px;
 }}
 
+QGroupBox#checkpointBanner {{
+    background-color: rgba(245, 165, 36, 0.12);
+    border: 1px solid {WARNING};
+    margin-top: 12px;
+}}
+
+QGroupBox#checkpointBanner::title {{
+    color: {WARNING};
+}}
+
 /* ---------------- Buttons ---------------- */
 
 QPushButton {{
