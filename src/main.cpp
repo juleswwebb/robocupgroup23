@@ -177,6 +177,7 @@ Task tUpdate_debug_protocol(DEBUG_PROTOCOL_UPDATE_PERIOD, DEBUG_PROTOCOL_NUM_EXE
 // if the GUI connection or a keyboard event disappears.
 Task tUpdate_drive_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drive_control_update);
 Task tUpdate_drum_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &drum_control_update);
+Task tUpdate_servo_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &servo_control_update);
 Task tUpdate_magnet_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &magnet_control_update);
 Task tUpdate_navigation(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &navigation_update);
 
@@ -190,11 +191,10 @@ Scheduler taskManager;
 //
 // Commands:
 //   mode sensors          - show all sensor debug prints (default)
-//   mode test             - hide sensor prints, just show servo state
-//   servo us <500-2500>   - set the servo's raw pulse width directly
-//   servo speed <-100..100> - set speed as a percentage (0 = stop)
-//   servo angle <0-180>   - set a position (for a positional servo)
-//   servo stop            - shorthand for "servo speed 0"
+//   mode test             - hide sensor prints for actuator tests
+//   servo us <1000-2000>  - pulse/speed test on D20 (1500 = neutral)
+//   servo angle <0-180>   - positional-servo target on D20
+//   servo stop            - neutralise pulse-test mode; position mode holds
 //   drive <left> <right>  - command both main drive motors (-100..100)
 //   drive stop            - neutral both main drive motors
 //   help                  - show this list
@@ -233,6 +233,7 @@ static void on_debug_json_mode_changed(bool json_active) {
     set_sensor_debug_prints_enabled(false);
   } else {
     drum_control_stop();
+    servo_control_stop();
     set_sensor_debug_prints_enabled(!testMode);
   }
 }
@@ -244,6 +245,9 @@ static void print_console_help() {
   out.println("  mode test               - hide sensor prints for actuator testing");
   out.println("  drive <left> <right>    - main drive motors, -100 to 100");
   out.println("  drive stop              - neutral both main drive motors");
+  out.println("  servo us <1000-2000>    - pulse/speed test on D20 (1500 = neutral)");
+  out.println("  servo angle <0-180>     - positional-servo target on D20");
+  out.println("  servo stop              - neutralise pulse-test mode");
   out.println("  help                    - show this list");
 }
 
@@ -265,7 +269,29 @@ static void handle_console_command(const char* command, const char* args) {
       out.println("usage: mode <sensors|test>");
     }
   } else if (strcmp(command, "servo") == 0) {
-    out.println("servo unavailable: D28/D29 are assigned to the drum motors");
+    if (strcmp(args, "stop") == 0) {
+      servo_control_stop();
+    } else {
+      const char* separator = strchr(args, ' ');
+      if (separator == nullptr) {
+        out.println("usage: servo us <1000-2000> | servo angle <0-180> | servo stop");
+        return;
+      }
+      if (strncmp(args, "angle ", 6) == 0) {
+        servo_control_set_angle(atoi(separator + 1));
+      } else if (strncmp(args, "us ", 3) == 0) {
+        const int pulseUs = atoi(separator + 1);
+        if (pulseUs < SERVO_TEST_MIN_US || pulseUs > SERVO_TEST_MAX_US) {
+          out.println("servo: pulse must be 1000-2000 us");
+          return;
+        }
+        servo_control_set_microseconds(pulseUs);
+      } else {
+        out.println("usage: servo us <1000-2000> | servo angle <0-180> | servo stop");
+        return;
+      }
+    }
+    servo_control_print();
   } else if (strcmp(command, "drive") == 0) {
     if (strcmp(args, "stop") == 0) {
       drive_control_stop();
@@ -320,6 +346,7 @@ void setup() {
   drive_control_init();    // D7/D8 drive ESCs; starts safely at neutral
   drum_control_init();     // D28/D29 drum outputs, neutral at boot
   magnet_control_init();   // D26 magnet driver output, safely OFF at boot
+  servo_control_init();    // D20 servo/pulse output, neutral at boot
   navigation_init();       // autonomous navigation remains disabled at boot
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
@@ -367,6 +394,7 @@ void task_init() {
   // be serviced before entering that driver.
   taskManager.addTask(tUpdate_drive_control);
   taskManager.addTask(tUpdate_drum_control);
+  taskManager.addTask(tUpdate_servo_control);
   taskManager.addTask(tUpdate_magnet_control);
   taskManager.addTask(tUpdate_console);
   taskManager.addTask(tUpdate_debug_protocol);

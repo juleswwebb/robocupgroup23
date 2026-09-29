@@ -58,6 +58,15 @@
 #define MAGNET_PIN 26
 #define MAGNET_COMMAND_TIMEOUT_MS 1000
 
+// Servo test output on D20. D20 is also A6, so the unused IR reader must not
+// sample it while this output is attached.
+#define SERVO_TEST_PIN 20
+#define SERVO_TEST_NEUTRAL_US 1500
+#define SERVO_TEST_MIN_US 1000
+#define SERVO_TEST_MAX_US 2000
+#define SERVO_TEST_COMMAND_TIMEOUT_MS 300
+#define IR_DISTANCE_SENSORS_ENABLED 0
+
 // The six point VL53 sensors and their SX1509 are on I2C bus 0
 // (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire
@@ -85,8 +94,8 @@
 
 #define MATRIX_LIDAR_ADDR 0x33   // fixed by the DFRobot module itself
 
-// 4 analog Sharp-style IR distance sensors (see IRDistanceSensor.h for the
-// distance conversion caveats).
+// Legacy IR input pin assignments. IR_DISTANCE_SENSORS_ENABLED is currently
+// zero because D20/A6 is assigned to the servo output.
 #define IR0_PIN A6
 #define IR1_PIN A7
 #define IR2_PIN A8
@@ -120,7 +129,7 @@
 #define ENCODER1_PIN_B 5
 #define ENCODER_USE_INTERNAL_PULLUPS 1
 
-// D28/D29 also double as Serial7 RX/TX. Serial7 and the old single-servo
-// test cannot be used while these pins drive the drums.
+// D20 is the servo test output; D21 is unused by this servo. D28/D29 remain
+// dedicated to the left/right drum motor drivers.
 
 #endif /* SENSOR_CONFIG_H_ */

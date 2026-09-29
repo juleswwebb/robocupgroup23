@@ -6,7 +6,9 @@
 #if SERIAL_TOF_ENABLED
 #include "sensors/SerialTofSensor.h"
 #endif
+#if IR_DISTANCE_SENSORS_ENABLED
 #include "sensors/IRDistanceSensor.h"
+#endif
 #if ULTRASONIC_ENABLED
 #include "sensors/UltrasonicSensor.h"
 #endif
@@ -32,10 +34,12 @@ static MatrixLidarSensor tof8x8("tof_8x8", MATRIX_LIDAR_ADDR, &MATRIX_LIDAR_I2C_
 static SerialTofSensor tofSerial("tof_serial", SERIAL_TOF_PORT, SERIAL_TOF_BAUD);
 #endif
 
+#if IR_DISTANCE_SENSORS_ENABLED
 static IRDistanceSensor ir0("ir_0", IR0_PIN);
 static IRDistanceSensor ir1("ir_1", IR1_PIN);
 static IRDistanceSensor ir2("ir_2", IR2_PIN);
 static IRDistanceSensor ir3("ir_3", IR3_PIN);
+#endif
 
 #if ULTRASONIC_ENABLED
 static UltrasonicSensor ultrasonic0("ultrasonic_0", ULTRASONIC0_TRIG_PIN, ULTRASONIC0_ECHO_PIN);
@@ -74,10 +78,12 @@ void distance_sensors_init() {
 #if SERIAL_TOF_ENABLED
     sensorManager.addSensor(&tofSerial);
 #endif
+#if IR_DISTANCE_SENSORS_ENABLED
     sensorManager.addSensor(&ir0);
     sensorManager.addSensor(&ir1);
     sensorManager.addSensor(&ir2);
     sensorManager.addSensor(&ir3);
+#endif
 #if ULTRASONIC_ENABLED
     sensorManager.addSensor(&ultrasonic0);
     sensorManager.addSensor(&ultrasonic1);

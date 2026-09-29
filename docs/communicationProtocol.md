@@ -3057,3 +3057,18 @@ the firmware should expose it through the protocol.
 The GUI should then discover and display it automatically.
 
 That is what makes this debug system useful as a long-term robotics development tool rather than just a one-off serial monitor.
+
+## Current D20 servo controls
+
+`servo_set` accepts `pulse_us` (1000–2000) for a continuous-rotation / ESC
+pulse test on D20. `1500 us` is neutral, `1000 us` reverse, and `2000 us`
+forward. The GUI refreshes the pulse only while a direction button is held;
+firmware returns it to neutral after 300 ms without a command, on STOP, or on
+Debug Mode exit.
+
+`servo_angle_set` accepts `angle` (0–180) and calls `Servo.write(degrees)` on
+D20. A positional servo holds the requested target; STOP/debug exit do not
+change that target. Use this only with a positional servo. A continuous-
+rotation servo interprets those pulses as speed, not angle, so it cannot
+provide genuine angle positioning without feedback. D20 aliases A6; IR sensor
+registration is disabled while D20 is assigned to servo control.

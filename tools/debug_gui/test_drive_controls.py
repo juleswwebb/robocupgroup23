@@ -19,6 +19,61 @@ class Value:
 
 
 class DriveControlTests(unittest.TestCase):
+    def test_servo_pulse_test_stops_to_neutral_on_release(self):
+        sent = []
+        gui = SimpleNamespace(
+            servo_held=False,
+            servo_test_pulse_us=1500,
+            last_telemetry_monotonic=time.monotonic(),
+            _servo_controls_available=lambda: True,
+            _send_servo_test_pulse=lambda pulse: sent.append(pulse),
+            _send_servo_test_command=lambda: RobotDebugGUI._send_servo_test_command(gui),
+            servo_status_label=SimpleNamespace(setText=lambda _text: None),
+        )
+        with patch("DebugGUI.theme.set_pill_state"):
+            RobotDebugGUI._start_servo_test(gui, 2000)
+            self.assertEqual(sent, [2000])
+            self.assertTrue(gui.servo_held)
+            RobotDebugGUI._stop_servo_test(gui)
+        self.assertEqual(sent, [2000, 1500])
+        self.assertFalse(gui.servo_held)
+
+    def test_servo_angle_sends_positional_target_on_fixed_d20(self):
+        sent = []
+        recorded = []
+        gui = SimpleNamespace(
+            servo_held=False,
+            last_telemetry_monotonic=time.monotonic(),
+            _servo_angle_controls_available=lambda: True,
+            servo_angle_spin=Value(135),
+            recorder=SimpleNamespace(
+                record_command=lambda name, args: recorded.append((name, args))
+            ),
+            bluetooth=SimpleNamespace(
+                send_command=lambda *args, **kwargs: sent.append((args, kwargs))
+            ),
+            servo_status_label=SimpleNamespace(setText=lambda _text: None),
+        )
+        with patch("DebugGUI.theme.set_pill_state"):
+            RobotDebugGUI._send_servo_angle(gui)
+        self.assertEqual(recorded, [("servo_angle_set", {"angle": 135})])
+        self.assertEqual(sent, [(('servo_angle_set',), {"angle": 135})])
+
+    def test_servo_test_refuses_to_start_without_fresh_telemetry(self):
+        sent = []
+        gui = SimpleNamespace(
+            servo_held=False,
+            servo_test_pulse_us=1500,
+            last_telemetry_monotonic=time.monotonic() - 3.0,
+            _servo_controls_available=lambda: True,
+            _send_servo_test_pulse=lambda pulse: sent.append(pulse),
+            servo_status_label=SimpleNamespace(setText=lambda _text: None),
+        )
+        with patch("DebugGUI.theme.set_pill_state"):
+            RobotDebugGUI._start_servo_test(gui, 1000)
+        self.assertEqual(sent, [])
+        self.assertFalse(gui.servo_held)
+
     def test_side_scales_apply_to_forward_and_reverse_not_pure_turns(self):
         gui = SimpleNamespace(
             drive_speed_slider=Value(100),

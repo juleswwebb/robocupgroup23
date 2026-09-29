@@ -27,7 +27,8 @@ from serial.tools import list_ports
 
 BAUD = 115200
 REQUIRED_COMMANDS = {
-    "stop", "set_debug_mode", "drive_set", "drum_set", "magnet_set", "encoders_reset",
+    "stop", "set_debug_mode", "drive_set", "drum_set", "magnet_set",
+    "servo_set", "servo_angle_set", "encoders_reset",
 }
 REQUIRED_PARAMETERS = {
     "telemetry.interval_ms", "drive.max_percent",
@@ -35,7 +36,6 @@ REQUIRED_PARAMETERS = {
 REQUIRED_TELEMETRY = {
     *(f"tof.xshut{i}" for i in range(7)),
     "tof.8x8", "tof.array_min", "tof.array_valid_zones",
-    *(f"ir.{i}" for i in range(4)),
     "ultrasonic.0", "ultrasonic.1",
     "colour.r", "colour.g", "colour.b", "colour.c",
     "imu.heading", "imu.roll", "imu.pitch",
@@ -47,6 +47,8 @@ REQUIRED_TELEMETRY = {
     "drum.left_percent", "drum.right_percent",
     "drum.left_us", "drum.right_us", "drum.active",
     "magnet.on",
+    "servo.pin", "servo.pulse_us", "servo.active",
+    "servo.angle_deg", "servo.position_mode",
     "bluetooth.active", "bluetooth.rx_messages",
     "system.uptime_ms",
 }
@@ -149,6 +151,10 @@ def probe(port: str, baud: int, timeout: float) -> ProbeResult:
         send_message(link, {"type": "command", "command": "drive_set", "left": 0, "right": 0})
         send_message(link, {"type": "command", "command": "drum_set", "left": 0, "right": 0})
         send_message(link, {"type": "command", "command": "magnet_set", "enabled": False})
+        send_message(link, {
+            "type": "command", "command": "servo_set",
+            "pulse_us": 1500,
+        })
         send_message(link, {"type": "parameter_request", "name": "drive.max_percent"})
         send_message(link, {"type": "parameter_request", "name": "telemetry.interval_ms"})
         send_message(link, {"type": "command", "command": "set_debug_mode", "enabled": False})

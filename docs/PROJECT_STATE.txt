@@ -278,8 +278,8 @@ Status terms:
 | 2 x VL53L0X + 4 x VL53L1X | Implemented through the common distance API; add-on SX1509 `0x71` IO0/3/4/5/6/7 channels are sequenced and assigned unique addresses | **Awaiting upload and live verification** | `DistanceSensors.cpp`, both VL53 drivers, `sensor_config.h` |
 | DFRobot 8x8 TOF | Full 64-zone reads, centre value and minimum value implemented; hardware polling is limited to 10 Hz with a 150 ms timeout | **Live 64-zone grids observed on 22 September 2026.** | `MatrixLidarSensor.cpp`, `DistanceSensors.cpp` |
 | Serial TOF | Nine-byte frame parser retained but disabled | **Parked:** Serial2 D7/D8 are now main-drive PWM outputs | `SerialTofSensor.cpp`, `sensor_config.h` |
-| USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **Verified on both transports. Bluetooth received 152 JSON messages, 17 telemetry packets, 114 signal definitions and seven commands. USB regression received 148 JSON messages, 13 telemetry packets, 114 definitions and seven commands.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
-| 4 x analog IR | Implemented through common distance API | **Verified** | `IRDistanceSensor.cpp` |
+| USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **Previously verified on both transports; latest protocol adds a servo angle command and telemetry and still needs a hardware regression.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
+| 4 x analog IR | Driver retained, but sensor registration is disabled because D20/A6 is the servo output | **Not currently sampled or shown** | `IRDistanceSensor.cpp`, `sensor_config.h` |
 | 2 x HC-SR04 ultrasonic | Driver enabled: interrupt echo, alternating pings | **Unverified on hardware:** D30/D31 and D32/D33; confirm power and 3.3 V-safe echo level | `UltrasonicSensor.cpp`, `sensor_config.h` |
 | TCS34725 colour | Raw RGBC integration implemented | **Verified previously**; later returned zeros while the shared `Wire1` bus was also suspect | `ColourSensor.cpp`, `sensors.cpp` |
 | PMW3901 optical flow | SPI motion and accumulated counts implemented | **Verified** | `OpticalFlowSensor.cpp`, `OpticalFlow.cpp` |
@@ -289,7 +289,7 @@ Status terms:
 | 2 x quadrature encoder | Full 4x A/B interrupt decoder, internal pull-ups and raw-input diagnostics | **Counts worked after the CPU board was replaced**, per operator; D2–D5. Distance scale, sign and wheel track still need measured calibration | `EncoderSensor.cpp`, `Encoders.cpp` |
 | 2 x drum/reel motors | Servo-style signal outputs, Debug Mode gate, +/-100% range and 300 ms watchdog | **Wired per operator:** D28 left, D29 right; direction and driver pulse requirements remain unverified | `DrumControl.cpp`, `sensor_config.h` |
 | Electromagnet | D26 active-high driver output, GUI toggle, Debug Mode gate and 1 s keepalive failsafe | **Implemented in firmware/app; hardware not yet tested.** Never connect the coil directly to the Teensy GPIO. | `MagnetControl.cpp`, `DebugProtocol.cpp`, `DebugGUI.py` |
-| One servo or continuous-rotation servo | Previous test controls retired | D28/D29 are now reserved exclusively for drum motors | `ServoControl.cpp` |
+| One servo or continuous-rotation servo | D20 pulse test is hold-to-run with a 300 ms watchdog; separate positional mode accepts a 0-180 degree target and holds it | **D20 selected by operator; servo type must be confirmed before using angle mode** | `ServoControl.cpp`, `DebugProtocol.cpp`, `DebugGUI.py` |
 | Main drive motors | Left/right PWM, keyboard controls, pulse/command telemetry, app controls and watchdog | **Coded and build-verified:** must be tested with wheels safely off the ground | `DriveControl.cpp`, `DebugProtocol.cpp`, `DebugGUI.py` |
 
 ## Scheduler and timing
@@ -333,9 +333,8 @@ USB human-readable output is the startup mode. Available console commands are:
 ```text
 mode sensors
 mode test
-servo us 500-2500
-servo speed -100..100
-servo angle 0-180
+servo us <1000-2000>
+servo angle <0-180>
 servo stop
 drive <left> <right>
 drive stop
@@ -355,7 +354,6 @@ The actual telemetry names produced by the current firmware are:
 - `tof.array_min` for the closest valid matrix zone
 - `tof.array.r0c0` through `tof.array.r7c7` for all 64 matrix zones
 - `tof.array_valid_zones` for frame health
-- `ir.0` through `ir.3`
 - `ultrasonic.0` and `ultrasonic.1`
 - `colour.r`, `colour.g`, `colour.b`, `colour.c`
 - `imu.heading`, `imu.roll`, `imu.pitch`
@@ -363,7 +361,7 @@ The actual telemetry names produced by the current firmware are:
 - `flow.dx`, `flow.dy`, `flow.total_x`, `flow.total_y`
 - `inductive.detected`, `inductive.count`
 - `encoder.0`, `encoder.1`
-- `servo.us`
+- `servo.pin`, `servo.pulse_us`, `servo.active`, `servo.angle_deg`, `servo.position_mode`
 - `drive.left_percent`, `drive.right_percent`, `drive.left_us`, `drive.right_us`, `drive.active`
 - `bluetooth.active`, `bluetooth.rx_messages`
 - `system.uptime_ms`
@@ -373,19 +371,19 @@ Every signal is sent each packet. Invalid readings are JSON `null`, which clears
 The firmware advertises three parameters:
 
 - `telemetry.interval_ms`, constrained to 20 to 2000 ms
-- `servo.pulse_us`, advertised as 1000 to 2000 us and gated by debug mode
 - `drive.max_percent`, gated by debug mode and hard-capped at 100 percent
 
-It advertises six commands:
+Core advertised commands include:
 
-- `stop`, always allowed and neutralizes every actuator output
+- `stop`, always allowed and stops drive, drum, magnet and pulse-test outputs; positional servo holds its last target
 - `set_debug_mode`
-- `servo_set`, gated by debug mode
+- `servo_set`, accepts a 1000-2000 us D20 pulse; gated by debug mode and returns to 1500 us after a 300 ms watchdog
+- `servo_angle_set`, accepts a 0-180 degree positional-servo target on D20; gated by debug mode
 - `drive_set`, gated by debug mode; accepts independent `left` and `right` percentages
 - `encoders_reset`
 - `set_text_mode`
 
-The low-level servo function permits 500 to 2500 us, while the GUI parameter definition advertises the safer 1000 to 2000 us range.
+The D20 pulse test matches the continuous-rotation behavior in the supplied sketch: 1000 us reverse, 1500 us neutral, 2000 us forward. Dashboard pulse buttons refresh while held and firmware returns the output to neutral 300 ms after refresh stops. The separate angle command uses `Servo.write(degrees)` and holds the requested position; it is only meaningful for a positional servo. On a continuous-rotation servo, angle values instead behave like speed commands. D20 aliases A6, so IR sampling is disabled while the servo output is assigned there.
 
 ## Python application data flow
 
@@ -444,7 +442,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 1. **The `Wire1` hardware path needs revalidation.** The 8x8 array, colour sensor and BNO055 share this bus. They worked at different stages, but later the 8x8 became invalid and colour values became zero. A failure affecting all three points first to shared SDA, SCL, power, ground, or connector integrity rather than three independent driver failures.
 2. **Ultrasonic sensing is unverified.** The firmware now enables D30/D31 and D32/D33, alternates trigger pulses at least 60 ms apart and invalidates readings without an echo after 38 ms. Verify power and level-shift each HC-SR04 echo to 3.3 V before connecting to a Teensy 4.0.
 3. **Encoders work after replacing the CPU board.** The encoder board uses the direct Digital Raw 2 inputs D2/D3 and D4/D5. Both raw A/B transitions and signed counts have been observed. Encoder distance scale and left/right polarity still require measured calibration.
-4. **The servo signal pin is still ambiguous.** Driving both D28 and D29 works for testing but consumes two pins and prevents `Serial7` use. Identify the actual signal conductor and drive only that pin.
+4. **Servo type/angle behavior needs physical confirmation.** D20 is now the selected signal pin. The app has both a pulse/speed test and a positional angle control; the latter must only be used with a positional servo. The supplied 1000/2000 us sketch is evidence that the connected unit may instead be continuous rotation. Test with its linkage clear and stop if it binds. D20 aliases A6, whose IR sampling is disabled.
 5. **The serial TOF is intentionally offline.** Its D7/D8 Serial2 connector now carries PWM to the main-drive ESCs. Do not re-enable `SERIAL_TOF_ENABLED` unless the drive motors are moved to different pins.
 6. **The colour read blocks the cooperative scheduler.** Its approximately 50 ms integration call runs every 60 ms, so nominal 20 ms tasks cannot maintain their requested timing. Consider a non-blocking register read strategy or reduce the read rate when timing becomes important.
 7. **USB and Bluetooth passed the automated live protocol suite on 22 September 2026.** After the later CPU-board replacement USB remains verified, but the CH9143 path currently needs power/connection revalidation: USB reports zero Serial1 RX bytes and a forced Serial1 probe did not reach the computer-side CH9143 port. The firmware configuration remains Serial1 RX1/D0 and TX1/D1 at 115200 baud.
@@ -456,7 +454,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 
 1. Recheck board IO power, ground, and both I2C buses with an address scanner.
 2. Revalidate all three `Wire1` devices together at `0x28`, `0x29`, and `0x33`.
-3. Identify the single servo signal pin and stop driving the other pin.
+3. Confirm the servo type mechanically before using the D20 angle control; use the hold-to-run pulse control if it is continuous rotation.
 4. Prove encoder waveforms electrically, then verify signed counts and counts per wheel revolution.
 5. Restore HC-SR04 power and echo operation, then stagger trigger timing.
 6. Connect and verify the USB GUI handshake, telemetry definitions, live values, 8x8 view, plots, recording, commands and emergency stop path.

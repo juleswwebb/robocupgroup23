@@ -204,21 +204,29 @@ def _build_ports() -> list[Port]:
              expects="magnet", pins=("D26",)),
     ))
 
-    # A0-A13 are D14-D27 on the Teensy 4.0.
+    # A0-A13 are D14-D27 on the Teensy 4.0. D20/A6 is the servo output and
+    # is not sampled as an IR input. D21/A7 remains an available GPIO.
     for n in range(14):
+        if n == 6:
+            continue
         digital = 14 + n
         signals: tuple[tuple[str, str], ...] = ()
         expects = None
         if n == 0:
             signals = (("inductive.detected", "Detected"), ("inductive.count", "Count"))
             expects = "inductive"
-        elif 6 <= n <= 9:
-            signals = ((f"ir.{n - 6}", "Distance"),)
-            expects = "ir"
         ports.append(Port(
             f"a{n}", f"A{n}  ·  D{digital}", "pin",
             signals=signals, expects=expects, pins=(f"D{digital}",),
         ))
+
+    ports.append(Port(
+        "servo_test_d20", "Servo signal · D20 / A6", "pwm",
+        signals=(("servo.angle_deg", "Target angle"),
+                 ("servo.pulse_us", "Pulse"),
+                 ("servo.active", "Pulse test active")),
+        expects="servo", pins=("D20",),
+    ))
 
     ports.append(Port(
         "spi_cs10", "SPI  ·  CS 10 (MOSI 11 / MISO 12 / SCK 13)", "spi",
@@ -289,6 +297,7 @@ def default_devices() -> list[Device]:
         Device("Left drum", "drum", "drum_left"),
         Device("Right drum", "drum", "drum_right"),
         Device("Electromagnet", "magnet", "magnet_driver"),
+        Device("Servo", "servo", "servo_test_d20"),
     ]
     devices += [
         Device("IMU", "imu", "wire1_0x28"),

@@ -336,8 +336,17 @@ class RobotDebugGUI(QMainWindow):
         self.drive_command_available = False
         self.drum_command_available = False
         self.magnet_command_available = False
+        self.servo_command_available = False
+        self.servo_angle_command_available = False
         self.drum_held = False
         self.drum_latched = False
+        self.servo_held = False
+        self.servo_test_pulse_us = 1500
+        self.servo_reported_pin = 20
+        self.servo_reported_pulse_us = 1500
+        self.servo_angle_target_deg = 90
+        self.servo_reported_angle_deg = 90
+        self.servo_position_mode = False
         self.magnet_is_on = False
         self.robot_debug_mode = False
         self.route_follower = None
@@ -420,6 +429,9 @@ class RobotDebugGUI(QMainWindow):
         self.drum_keepalive_timer = QTimer(self)
         self.drum_keepalive_timer.timeout.connect(self._send_drum_command)
         self.drum_keepalive_timer.start(100)
+        self.servo_keepalive_timer = QTimer(self)
+        self.servo_keepalive_timer.timeout.connect(self._send_servo_test_command)
+        self.servo_keepalive_timer.start(100)
         self.magnet_keepalive_timer = QTimer(self)
         self.magnet_keepalive_timer.timeout.connect(self._send_magnet_keepalive)
         self.magnet_keepalive_timer.start(100)
@@ -1160,6 +1172,74 @@ class RobotDebugGUI(QMainWindow):
         magnet_layout.addWidget(self.magnet_status_label)
         command_panel_layout.addWidget(magnet_group)
 
+        servo_group = QGroupBox("Servo controls · D20")
+        servo_layout = QVBoxLayout(servo_group)
+        servo_hint = QLabel(
+            "Position mode sets and holds a target angle. Use it only with a positional "
+            "servo. Your earlier 1000/2000 µs example is continuous-rotation behavior; "
+            "on that type, angle commands act like speed, not a physical angle. D20 is "
+            "also A6, so IR sampling there is disabled. Controls require Debug Mode."
+        )
+        servo_hint.setWordWrap(True)
+        servo_hint.setObjectName("hint")
+        servo_layout.addWidget(servo_hint)
+        angle_title = QLabel("POSITIONAL SERVO · TARGET ANGLE")
+        angle_title.setObjectName("sectionTitle")
+        servo_layout.addWidget(angle_title)
+        angle_row = QHBoxLayout()
+        self.servo_angle_slider = QSlider(Qt.Orientation.Horizontal)
+        self.servo_angle_slider.setRange(0, 180)
+        self.servo_angle_slider.setValue(90)
+        self.servo_angle_slider.setToolTip("Choose a positional-servo target from 0° to 180°")
+        self.servo_angle_spin = QSpinBox()
+        self.servo_angle_spin.setRange(0, 180)
+        self.servo_angle_spin.setValue(90)
+        self.servo_angle_spin.setSuffix("°")
+        self.servo_angle_slider.valueChanged.connect(self.servo_angle_spin.setValue)
+        self.servo_angle_spin.valueChanged.connect(self.servo_angle_slider.setValue)
+        angle_row.addWidget(self.servo_angle_slider, 1)
+        angle_row.addWidget(self.servo_angle_spin)
+        servo_layout.addLayout(angle_row)
+        angle_buttons = QHBoxLayout()
+        self.servo_set_angle_button = QPushButton("SET POSITION")
+        self.servo_set_angle_button.setObjectName("primaryButton")
+        self.servo_set_angle_button.setEnabled(False)
+        self.servo_set_angle_button.clicked.connect(self._send_servo_angle)
+        self.servo_center_button = QPushButton("CENTER · 90°")
+        self.servo_center_button.setEnabled(False)
+        self.servo_center_button.clicked.connect(self._center_servo)
+        angle_buttons.addWidget(self.servo_set_angle_button)
+        angle_buttons.addWidget(self.servo_center_button)
+        servo_layout.addLayout(angle_buttons)
+
+        pulse_title = QLabel("CONTINUOUS-ROTATION PULSE TEST")
+        pulse_title.setObjectName("sectionTitle")
+        servo_layout.addWidget(pulse_title)
+        servo_button_row = QHBoxLayout()
+        self.servo_reverse_button = QPushButton("HOLD REVERSE · 1000 µs")
+        self.servo_reverse_button.setEnabled(False)
+        self.servo_reverse_button.pressed.connect(lambda: self._start_servo_test(1000))
+        self.servo_reverse_button.released.connect(self._stop_servo_test)
+        self.servo_forward_button = QPushButton("HOLD FORWARD · 2000 µs")
+        self.servo_forward_button.setEnabled(False)
+        self.servo_forward_button.setObjectName("primaryButton")
+        self.servo_forward_button.pressed.connect(lambda: self._start_servo_test(2000))
+        self.servo_forward_button.released.connect(self._stop_servo_test)
+        servo_button_row.addWidget(self.servo_reverse_button)
+        servo_button_row.addWidget(self.servo_forward_button)
+        servo_layout.addLayout(servo_button_row)
+        self.servo_stop_button = QPushButton("STOP PULSE TEST · 1500 µs")
+        self.servo_stop_button.setEnabled(False)
+        self.servo_stop_button.clicked.connect(
+            lambda _checked=False: self._stop_servo_test(force=True)
+        )
+        servo_layout.addWidget(self.servo_stop_button)
+        self.servo_status_label = QLabel("WAITING FOR DEBUG MODE / SERVO CONTROL")
+        self.servo_status_label.setObjectName("statusPill")
+        theme.set_pill_state(self.servo_status_label, "")
+        servo_layout.addWidget(self.servo_status_label)
+        command_panel_layout.addWidget(servo_group)
+
         self.dashboard_command_container = QWidget()
 
         self.dashboard_command_layout = QVBoxLayout(
@@ -1282,6 +1362,130 @@ class RobotDebugGUI(QMainWindow):
             self.drum_status_label.setText("STOPPED · HOLD OR SWITCH RUN")
             theme.set_pill_state(self.drum_status_label, "ok")
 
+    def _servo_controls_available(self) -> bool:
+        return (self.bluetooth.is_connected() and self.robot_debug_mode
+                and self.servo_command_available)
+
+    def _update_servo_controls(self):
+        pulse_available = self._servo_controls_available()
+        position_available = self._servo_angle_controls_available()
+        self.servo_reverse_button.setEnabled(pulse_available)
+        self.servo_forward_button.setEnabled(pulse_available)
+        self.servo_stop_button.setEnabled(pulse_available)
+        self.servo_angle_slider.setEnabled(position_available)
+        self.servo_angle_spin.setEnabled(position_available)
+        self.servo_set_angle_button.setEnabled(position_available)
+        self.servo_center_button.setEnabled(position_available)
+        if not pulse_available and self.servo_held:
+            self._stop_servo_test(send_command=False)
+        elif not pulse_available and not position_available:
+            self.servo_status_label.setText("CONNECT / ENTER DEBUG MODE TO TEST")
+            theme.set_pill_state(self.servo_status_label, "")
+
+    def _servo_angle_controls_available(self) -> bool:
+        return (self.bluetooth.is_connected() and self.robot_debug_mode
+                and self.servo_angle_command_available)
+
+    def _send_servo_test_pulse(self, pulse_us: int):
+        arguments = {"pulse_us": int(pulse_us)}
+        self.recorder.record_command("servo_set", arguments)
+        self.bluetooth.send_command("servo_set", **arguments)
+
+    def _send_servo_angle(self):
+        if not self._servo_angle_controls_available():
+            return
+        if (self.last_telemetry_monotonic is None
+                or time.monotonic() - self.last_telemetry_monotonic > 2.0):
+            self.servo_status_label.setText("BLOCKED · TELEMETRY LINK NOT HEALTHY")
+            theme.set_pill_state(self.servo_status_label, "bad")
+            return
+        if self.servo_held:
+            self._stop_servo_test()
+        angle = self.servo_angle_spin.value()
+        self.servo_angle_target_deg = angle
+        self.recorder.record_command("servo_angle_set", {"angle": angle})
+        self.bluetooth.send_command("servo_angle_set", angle=angle)
+        self.servo_status_label.setText(f"SETTING POSITION · D20 · {angle}°")
+        theme.set_pill_state(self.servo_status_label, "busy")
+
+    def _center_servo(self):
+        self.servo_angle_spin.setValue(90)
+        self.servo_angle_slider.setValue(90)
+        self._send_servo_angle()
+
+    def _start_servo_test(self, pulse_us: int):
+        if not self._servo_controls_available():
+            return
+        if (self.last_telemetry_monotonic is None
+                or time.monotonic() - self.last_telemetry_monotonic > 2.0):
+            self.servo_status_label.setText("BLOCKED · TELEMETRY LINK NOT HEALTHY")
+            theme.set_pill_state(self.servo_status_label, "bad")
+            return
+        self.servo_held = True
+        self.servo_test_pulse_us = int(pulse_us)
+        self._send_servo_test_command()
+
+    def _send_servo_test_command(self):
+        if not self.servo_held:
+            return
+        if not self._servo_controls_available():
+            self._stop_servo_test(send_command=False)
+            return
+        if (self.last_telemetry_monotonic is None
+                or time.monotonic() - self.last_telemetry_monotonic > 2.0):
+            self._stop_servo_test()
+            self.servo_status_label.setText("STOPPED · TELEMETRY LOST")
+            theme.set_pill_state(self.servo_status_label, "bad")
+            return
+        self._send_servo_test_pulse(self.servo_test_pulse_us)
+        direction = "REVERSE" if self.servo_test_pulse_us < 1500 else "FORWARD"
+        self.servo_status_label.setText(
+            f"RUNNING · D20 · {direction} · "
+            f"{self.servo_test_pulse_us} µs"
+        )
+        theme.set_pill_state(self.servo_status_label, "busy")
+
+    def _stop_servo_test(self, _checked: bool = False, *, force: bool = False,
+                         send_command: bool = True):
+        was_held = self.servo_held
+        self.servo_held = False
+        self.servo_test_pulse_us = 1500
+        if (send_command and self._servo_controls_available()
+                and (was_held or force)):
+            self._send_servo_test_pulse(1500)
+        if self._servo_controls_available():
+            self.servo_status_label.setText("STOPPED · D20 · 1500 µs")
+            theme.set_pill_state(self.servo_status_label, "ok")
+
+    def _servo_reported_state(self, pin: int | None = None,
+                              pulse_us: int | None = None,
+                              angle_deg: int | None = None,
+                              position_mode: bool | None = None):
+        if pin == 20:
+            self.servo_reported_pin = pin
+        if pulse_us is not None:
+            self.servo_reported_pulse_us = pulse_us
+        if angle_deg is not None:
+            self.servo_reported_angle_deg = angle_deg
+        if position_mode is not None:
+            self.servo_position_mode = position_mode
+        if (not self.servo_held and
+                (self._servo_controls_available() or self._servo_angle_controls_available())):
+            if self.servo_position_mode:
+                state = f"POSITION · D20 · {self.servo_reported_angle_deg}°"
+                pill_state = "ok"
+            else:
+                state = (
+                    f"PULSE · D20 · {self.servo_reported_pulse_us} µs"
+                    if self.servo_reported_pulse_us != 1500
+                    else "STOPPED · D20 · 1500 µs"
+                )
+                pill_state = "busy" if self.servo_reported_pulse_us != 1500 else "ok"
+            self.servo_status_label.setText(
+                state
+            )
+            theme.set_pill_state(self.servo_status_label, pill_state)
+
     def _magnet_controls_available(self) -> bool:
         return (self.bluetooth.is_connected() and self.robot_debug_mode
                 and self.magnet_command_available)
@@ -1356,6 +1560,8 @@ class RobotDebugGUI(QMainWindow):
     def focusOutEvent(self, event):
         if self.drum_held:
             self._stop_drum_hold()
+        if self.servo_held:
+            self._stop_servo_test()
         super().focusOutEvent(event)
 
     def _drive_controls_available(self) -> bool:
@@ -2807,6 +3013,7 @@ class RobotDebugGUI(QMainWindow):
             self._update_drive_controls()
             self._update_drum_controls()
             self._update_magnet_controls()
+            self._update_servo_controls()
 
         else:
             self.connected_since_monotonic = None
@@ -2815,12 +3022,16 @@ class RobotDebugGUI(QMainWindow):
             self.route_last_frame_monotonic = None
             self.robot_debug_mode = False
             self._stop_drum_hold()
+            self._stop_servo_test(send_command=False)
             self.drum_command_available = False
             self.magnet_command_available = False
+            self.servo_command_available = False
+            self.servo_angle_command_available = False
             self._set_drive_armed(False)
             self._update_drive_controls()
             self._update_drum_controls()
             self._update_magnet_controls()
+            self._update_servo_controls()
             self._set_magnet_visual(False, "OFF · DISCONNECTED (FIRMWARE FAILSAFE)", "bad")
             if self.recorder.is_recording:
                 self.stop_recording()
@@ -2962,6 +3173,14 @@ class RobotDebugGUI(QMainWindow):
         ] = value
         if name == "magnet.on" and isinstance(value, bool):
             self._magnet_reported_state(value)
+        if name == "servo.pin" and isinstance(value, (int, float)):
+            self._servo_reported_state(pin=int(value))
+        elif name == "servo.pulse_us" and isinstance(value, (int, float)):
+            self._servo_reported_state(pulse_us=int(value))
+        elif name == "servo.angle_deg" and isinstance(value, (int, float)):
+            self._servo_reported_state(angle_deg=int(value))
+        elif name == "servo.position_mode" and isinstance(value, bool):
+            self._servo_reported_state(position_mode=value)
         # ArenaView groups all signals sharing one robot timestamp into a
         # coherent pose/range frame. Feed it before matrix zones are hidden
         # from the large dashboard table below.
@@ -3447,6 +3666,16 @@ class RobotDebugGUI(QMainWindow):
             self._update_magnet_controls()
             # A dedicated, safety-aware switch is provided on the dashboard.
             return
+        if name == "servo_set":
+            self.servo_command_available = True
+            self._update_servo_controls()
+            # Dedicated D20 pulse-test buttons replace the generic command form.
+            return
+        if name == "servo_angle_set":
+            self.servo_angle_command_available = True
+            self._update_servo_controls()
+            # Positional-servo controls are provided in the dashboard.
+            return
 
         if name not in self.command_widgets:
             command_widget = CommandWidget(
@@ -3494,6 +3723,7 @@ class RobotDebugGUI(QMainWindow):
             name == "stop" or arguments.get("enabled") is False
         ):
             self._stop_drum_hold()
+            self._stop_servo_test(send_command=False)
             self._set_magnet_visual(
                 False,
                 "OFF · STOPPED" if name == "stop" else "OFF · DEBUG MODE EXITED",
@@ -3508,6 +3738,20 @@ class RobotDebugGUI(QMainWindow):
             name,
             **arguments,
         )
+
+        if name == "servo_set":
+            try:
+                self.servo_reported_pulse_us = int(arguments.get("pulse_us", 1500))
+            except (TypeError, ValueError):
+                pass
+            self._servo_reported_state()
+        elif name == "servo_angle_set":
+            try:
+                self.servo_reported_angle_deg = int(arguments.get("angle", 90))
+                self.servo_position_mode = True
+            except (TypeError, ValueError):
+                pass
+            self._servo_reported_state()
 
         if arguments:
             argument_text = ", ".join(
@@ -3607,8 +3851,13 @@ class RobotDebugGUI(QMainWindow):
             self.robot_debug_mode = bool(debug_enabled)
             if not self.robot_debug_mode:
                 self._stop_mission_route("Debug Mode exited", send_stop=False)
+                if self.servo_held:
+                    self._stop_servo_test(send_command=False)
             self._update_drive_controls()
             self._update_drum_controls()
+            if not self.robot_debug_mode and self.servo_held:
+                self._stop_servo_test(send_command=False)
+            self._update_servo_controls()
             if not self.robot_debug_mode and self.magnet_is_on:
                 self._set_magnet_visual(False, "OFF · DEBUG MODE EXITED", "ok")
             self._update_magnet_controls()
@@ -3616,6 +3865,17 @@ class RobotDebugGUI(QMainWindow):
         magnet_state = state.get("magnet_on")
         if isinstance(magnet_state, bool):
             self._magnet_reported_state(magnet_state)
+
+        servo_pin = state.get("servo_pin")
+        servo_pulse_us = state.get("servo_pulse_us")
+        self._servo_reported_state(
+            int(servo_pin) if servo_pin in (20, "20") else None,
+            int(servo_pulse_us) if isinstance(servo_pulse_us, (int, float)) else None,
+            int(state["servo_angle_deg"])
+            if isinstance(state.get("servo_angle_deg"), (int, float)) else None,
+            bool(state["servo_position_mode"])
+            if isinstance(state.get("servo_position_mode"), bool) else None,
+        )
 
         if debug_enabled is True:
             self.statusBar().showMessage(
@@ -3656,6 +3916,7 @@ class RobotDebugGUI(QMainWindow):
         self._set_drive_armed(False)
         self._stop_mission_route("App closing")
         self._stop_drum_hold()
+        self._stop_servo_test()
         if self.magnet_is_on:
             self._request_magnet(False, "OFF · APP CLOSING")
         self.bluetooth.disconnect_port()
