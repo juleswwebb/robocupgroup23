@@ -25,7 +25,7 @@ class MissionLayout:
         self.margin_mm = 90.0
         self.weights = []  # {x, y, dummy}
         self.obstacles = []  # {kind, x, y, width, height, rotation}
-        self.live_obstacles = []  # temporary 8x8 detections, never saved
+        self.live_obstacles = []  # temporary sensor detections, never saved
         self.route = []  # {x, y, target}
         self.error = ""
 
@@ -41,31 +41,118 @@ class MissionLayout:
         return (item["x"] - width/2, item["y"] - height/2,
                 item["x"] + width/2, item["y"] + height/2)
 
-    def blocked(self, x, y):
+    def blocked_reason(self, x, y):
+        """Explain which inflated arena feature occupies a robot-centre pose."""
         clearance = self.robot_radius_mm + self.margin_mm
-        if (x < clearance or y < clearance or
-                x > self.WIDTH_MM - clearance or
-                y > self.HEIGHT_MM - clearance):
-            return True
+        if x < clearance:
+            return f"left arena boundary (x={x:.0f} < {clearance:.0f} mm clearance)"
+        if x > self.WIDTH_MM - clearance:
+            return f"right arena boundary (x={x:.0f} > {self.WIDTH_MM-clearance:.0f} mm)"
+        if y < clearance:
+            return f"near arena boundary (y={y:.0f} < {clearance:.0f} mm clearance)"
+        if y > self.HEIGHT_MM - clearance:
+            return f"far arena boundary (y={y:.0f} > {self.HEIGHT_MM-clearance:.0f} mm)"
         rect = self.opposite_home()
         if (rect[0] - clearance <= x <= rect[2] + clearance and
                 rect[1] - clearance <= y <= rect[3] + clearance):
-            return True
-        for item in self.obstacles:
+            return "opposite-home exclusion zone"
+        for index, item in enumerate(self.obstacles, 1):
             if item["kind"] == "tube":
                 if math.hypot(x - item["x"], y - item["y"]) <= item["width"]/2 + clearance:
-                    return True
+                    return f"drawn obstacle {index} ({item.get('kind', 'obstacle')})"
             else:
                 x0, y0, x1, y1 = self.obstacle_rect(item)
                 if x0 - clearance <= x <= x1 + clearance and y0 - clearance <= y <= y1 + clearance:
-                    return True
-        for item in self.live_obstacles:
+                    return f"drawn obstacle {index} ({item.get('kind', 'obstacle')})"
+        for index, item in enumerate(self.live_obstacles, 1):
             if math.hypot(x - item["x"], y - item["y"]) <= item["radius"] + clearance:
-                return True
-        for item in self.weights:
+                return f"live sensor return {index} (within obstacle clearance)"
+        for index, item in enumerate(self.weights, 1):
             if item["dummy"] and math.hypot(x - item["x"], y - item["y"]) <= 120 + clearance:
-                return True
+                return f"dummy weight marker {index}"
+        return None
+
+    def blocked(self, x, y):
+        return self.blocked_reason(x, y) is not None
+
+    def _can_escape_buffered_start(self, x, y, reason):
+        """Allow replanning out of a safety *buffer*, never out of geometry.
+
+        Live range hits are inflated by the robot radius plus an extra margin
+        for path planning. A robot can therefore be inside that conservative
+        planning buffer while still physically clear of the return. Likewise,
+        odometry can put the centre a little inside the margin at an arena
+        edge. In those cases A* may choose a nearby free cell as a short escape
+        waypoint. Actual footprint overlap and drawn no-go geometry remain
+        hard failures.
+        """
+        radius = self.robot_radius_mm
+        if self._inside_physical_no_go(x, y):
+            return False
+        if any(math.hypot(x - item["x"], y - item["y"]) <
+               radius + item["radius"] for item in self.live_obstacles):
+            return False
+        if reason.startswith(("left arena boundary", "right arena boundary",
+                              "near arena boundary", "far arena boundary")):
+            return (radius <= x <= self.WIDTH_MM - radius and
+                    radius <= y <= self.HEIGHT_MM - radius)
+        if reason.startswith("live sensor return"):
+            return all(math.hypot(x - item["x"], y - item["y"]) >=
+                       radius + item["radius"]
+                       for item in self.live_obstacles)
         return False
+
+    def _inside_physical_no_go(self, x, y):
+        """Whether the chassis footprint actually overlaps static no-go map."""
+        radius = self.robot_radius_mm
+        rect = self.opposite_home()
+        if (rect[0] - radius <= x <= rect[2] + radius and
+                rect[1] - radius <= y <= rect[3] + radius):
+            return True
+        for item in self.obstacles:
+            if item["kind"] == "tube":
+                if math.hypot(x - item["x"], y - item["y"]) <= item["width"] / 2 + radius:
+                    return True
+            else:
+                x0, y0, x1, y1 = self.obstacle_rect(item)
+                if x0 - radius <= x <= x1 + radius and y0 - radius <= y <= y1 + radius:
+                    return True
+        return any(item["dummy"] and
+                   math.hypot(x - item["x"], y - item["y"]) <= 120 + radius
+                   for item in self.weights)
+
+    def _escape_segment_clear(self, start, end, allowed_reason):
+        """Check a connector out of one inflated buffer without entering geometry."""
+        distance = math.dist(start, end)
+        steps = max(1, math.ceil(distance / 40))
+        for step in range(1, steps + 1):
+            t = step / steps
+            x = start[0] + t * (end[0] - start[0])
+            y = start[1] + t * (end[1] - start[1])
+            # The robot may be inside the extra planning margin, but never
+            # permit an escape path through the chassis footprint or a static
+            # no-go zone. While still in a boundary margin, it must not move
+            # closer to that boundary.
+            radius = self.robot_radius_mm
+            if (x < radius or x > self.WIDTH_MM - radius or
+                    y < radius or y > self.HEIGHT_MM - radius or
+                    self._inside_physical_no_go(x, y)):
+                return False
+            if allowed_reason.startswith("near arena boundary") and y < start[1] - 1:
+                return False
+            if allowed_reason.startswith("far arena boundary") and y > start[1] + 1:
+                return False
+            if allowed_reason.startswith("left arena boundary") and x < start[0] - 1:
+                return False
+            if allowed_reason.startswith("right arena boundary") and x > start[0] + 1:
+                return False
+            if any(math.hypot(x - item["x"], y - item["y"]) <
+                   radius + item["radius"] for item in self.live_obstacles):
+                return False
+            reason = self.blocked_reason(x, y)
+            if reason is not None and reason != allowed_reason:
+                return False
+        return True
 
     def _nearest_free(self, point, max_offset_cells=7):
         gx, gy = round(point[0]/self.GRID_MM), round(point[1]/self.GRID_MM)
@@ -240,8 +327,15 @@ class MissionLayout:
 
     def replan_from(self, current, remaining_targets):
         """Plan around live obstacles without moving the original map origin."""
-        if self.blocked(*current):
-            raise ValueError("Robot pose lies inside obstacle clearance")
+        reason = self.blocked_reason(*current)
+        for index, item in enumerate(self.live_obstacles, 1):
+            if math.hypot(current[0] - item["x"], current[1] - item["y"]) < (
+                    self.robot_radius_mm + item["radius"]):
+                reason = f"live sensor return {index} overlaps robot footprint"
+                break
+        escaping_buffer = bool(reason and self._can_escape_buffered_start(*current, reason))
+        if reason and not escaping_buffer:
+            raise ValueError(f"robot pose ({current[0]:.0f}, {current[1]:.0f}) mm is inside {reason}")
         route = []
         source = current
         for target in remaining_targets:
@@ -249,8 +343,17 @@ class MissionLayout:
             if self.blocked(*goal):
                 raise ValueError("Remaining target is blocked by an obstacle")
             segment = self._astar(source, goal)
-            if not segment or not self._segment_clear(source, segment[0]):
+            if not segment:
                 raise ValueError("No clear detour to remaining target")
+            if escaping_buffer:
+                if not self._escape_segment_clear(source, segment[0], reason):
+                    raise ValueError("No safe escape from the robot's buffered start pose")
+            elif not self._segment_clear(source, segment[0]):
+                raise ValueError("No clear detour to remaining target")
+            if escaping_buffer and math.dist(source, segment[0]) > 1:
+                route.append({"x": segment[0][0], "y": segment[0][1],
+                              "target": False, "escape": True})
+            escaping_buffer = False
             route.extend({"x": x, "y": y, "target": False} for x, y in segment[1:-1])
             if not route or (route[-1]["x"], route[-1]["y"]) != segment[-1]:
                 endpoint = {"x": segment[-1][0], "y": segment[-1][1],
@@ -285,10 +388,17 @@ class MissionLayout:
 
     def route_is_clear_from(self, current, route):
         previous = current
-        for waypoint in route:
+        start_reason = self.blocked_reason(*current)
+        can_escape_start = bool(
+            start_reason and self._can_escape_buffered_start(*current, start_reason)
+        )
+        for index, waypoint in enumerate(route):
             target = (waypoint["x"], waypoint["y"])
             if not self._segment_clear(previous, target):
-                return False
+                if not (index == 0 and can_escape_start and
+                        self._escape_segment_clear(current, target, start_reason)):
+                    return False
+            can_escape_start = False
             previous = target
         return True
 

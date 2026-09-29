@@ -1,5 +1,92 @@
 # Robocup Group 23 Project State
 
+2026-09-29 00:54 run follow-up: drive commands show repeated hard
+80/-80-degree pivots as the follower corrected heading; the old controller
+switched to a pivot above 8° and could chatter around that cutoff. It now
+enters pivot mode above 24° and remains there until heading error falls below
+12°, with a wider target-alignment tolerance. At 18.28 s, xshut6 reported
+15 mm once, then became invalid (0); the GUI briefly stopped but resumed based
+on other sensors' farther returns. A close-ToF hold now tracks that same
+sensor and resumes only after two valid clear frames from it. Regression
+suite: 68 GUI tests pass; Python compile and diff checks pass. Desktop-only,
+not hardware-verified.
+
+2026-09-29 00:47 mission-run analysis and obstacle threshold update: the first
+pause/replan was caused by pose y=302 mm being 3 mm inside the planner's 305 mm
+arena-edge clearance. During the resulting turn, point-ToF returns around
+480–1350 mm were mapped as three live obstacles; A* then stopped because a
+remaining target was blocked. The upper 8×8 obstacle field did not report
+nearby returns; its ~380–428 mm minima were in lower rows ignored by mapping.
+To match the requested 20 mm obstacle threshold, both point-ToF and 8×8 map
+admission now ignore returns beyond 20 mm, and the direct distance hard-stop
+threshold is 20 mm (point-ToF still requires two frames). This means the
+robot will not autonomously map/avoid obstacles farther than 20 mm; it is a
+very close threshold and not a safe substitute for an emergency stop. Other
+stop conditions (boundary/route clearance, link loss, invalid pose, STOP and
+watchdog) remain. GUI-only; 66 offline tests, Python compile and diff checks
+pass, but hardware validation is still pending.
+
+2026-09-29 00:34 mission-run analysis: the robot did not stop on a one-frame
+close return. No point VL53 reading went below 300 mm (the smallest was 355
+mm), and the 8×8 minimum stayed between 377 and 411 mm. Instead, repeatable
+but shifting angled point-ToF returns were added as four live map obstacles;
+after two replans A* reported `No clear detour to remaining target`. The first
+two mapped points (about [860,568] and [1124,831] mm) came from the same
+top/bottom angled sensor pair while it was also producing the app's
+weight-like depth-gap signature. At that revision the follower required three
+distinct frames and excluded an active weight pair from generic obstacle
+mapping; the later 20 mm admission limit described above supersedes that
+distance policy. Regression suite: 66 GUI tests pass; Python compile and diff
+checks pass. This is desktop-only and not yet uploaded or hardware-verified.
+
+2026-09-29 mission-route failure follow-up: the 2026-09-28 23:38 recording
+stopped with `No safe detour: Robot pose lies inside obstacle clearance`, not
+because the 8×8 frame failed or reported a close forward obstacle. The upper
+central 8×8 zones used for obstacle mapping were empty in the captured frames;
+the ~255 mm matrix minimum came from lower rows, which are intentionally
+ignored as floor/chassis returns. The recording did not contain the saved
+mission map or the exact pose blocker, so it could not distinguish a boundary
+clearance from a drawn obstacle. GUI changes now record the mission map and
+the specific blocker on future replans. Route avoidance now combines valid
+VL53 point sensors with repeat-confirmed 8×8 hits; a 430 mm return is detour
+range, with a provisional 300 mm immediate hard-stop threshold pending a
+controlled stopping-distance test. Top L/R VL53 defaults are
+straight ahead, front inward pairs retain their 45° bearings, and side
+ultrasonics default to sideways wall-range rays. These are GUI-only changes,
+offline-tested but not uploaded or hardware-verified. A replan whose start is
+inside only the conservative sensor/edge clearance buffer now begins with a
+short waypoint to escape it; overlap with the actual modeled robot footprint
+or a drawn no-go object still fails safe. Mission status now describes live
+sensor obstacles rather than attributing every mark to the 8×8.
+
+The 2026-09-29 00:20 and 00:21 runs showed two further false-stop paths. At
+00:20, the global weight-signature detector saw a three-frame top/bottom
+range gap while the robot was transiting and halted the route, even though
+that candidate was not a planned weight target. At 00:21, a single
+Front_Top_Right sample of 288 mm (the prior/next samples were 373/476 mm)
+aborted the route although the 8×8 central minimum stayed about 390–414 mm.
+An unchanged pair of mapped points also caused redundant route replanning.
+The GUI now treats unplanned weight signatures as map annotations only;
+target approach still requires WeightTracker evidence at a planned site. A
+single point-ToF return below 300 mm now commands a temporary hold, and only
+the same sensor returning below threshold on a second distinct frame aborts
+the route; a cleared sample resumes it. Replanning is retried only when new
+obstacle geometry arrives or pose has moved at least 25 mm since the last
+plan; otherwise the robot remains stopped awaiting new evidence. This is
+desktop-only and offline-tested (65 GUI tests); it has not been uploaded or
+hardware-verified.
+
+The 2026-09-29 00:16 recording confirmed the repeated stop was not caused by
+any detected obstacle: `MISSION_REPLAN` reported zero live obstacles and zero
+candidate points, with pose y=301–304 mm against the 305 mm inflated arena-edge
+clearance. The app repeatedly replanned at the same pose, then stopped after
+four attempts. Route-clear checks now allow a clear first segment to continue
+out of this margin-only overlap, and escape segments are checked against the
+actual chassis boundary and static no-go geometry. Replan UI/log messages no
+longer call every clearance issue a sensor obstacle. Regression coverage now
+includes this exact 1 mm margin case; 62 GUI tests pass. Still not hardware
+verified.
+
 2026-09-28 navigation addendum: See GROUP7_PORT_STATUS.txt for the current
 Group 7 comparison and the new guarded weight-targeting/obstacle integration.
 The older snapshot below is historical and does not describe all current

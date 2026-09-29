@@ -274,7 +274,7 @@ class MissionPlannerView(QWidget):
         form.addRow(rotate)
         delete = QPushButton("Delete selected"); delete.clicked.connect(self.canvas.delete_selected)
         form.addRow(delete)
-        clear_live = QPushButton("Clear 8×8 obstacle marks")
+        clear_live = QPushButton("Clear live sensor obstacle marks")
         clear_live.clicked.connect(self._clear_live_obstacles)
         form.addRow(clear_live)
         body.addWidget(panel); root.addLayout(body, 1)
@@ -282,7 +282,9 @@ class MissionPlannerView(QWidget):
         self.status.setWordWrap(True); root.addWidget(self.status)
         self.follow_status = QLabel("Route follower idle · robot stays stopped")
         self.follow_status.setWordWrap(True); root.addWidget(self.follow_status)
-        self.obstacle_status = QLabel("8×8 mapped obstacles: 0 · red rings on map")
+        self.obstacle_status = QLabel(
+            "Live mapped obstacles: 0 · 8×8 + front VL53; side sonar wall rays are in Arena View"
+        )
         root.addWidget(self.obstacle_status)
         self.live_status = QLabel("Live weight candidates: 0 (hollow pink; requires calibrated start and odometry)")
         root.addWidget(self.live_status)
@@ -364,7 +366,8 @@ class MissionPlannerView(QWidget):
 
     def refresh_live_obstacles(self):
         self.obstacle_status.setText(
-            f"8×8 mapped obstacles: {len(self.model.live_obstacles)} · red rings on map"
+            f"Live mapped obstacles: {len(self.model.live_obstacles)} · "
+            "8×8 + front VL53; side sonar wall rays are in Arena View"
         )
         self.canvas.update()
 

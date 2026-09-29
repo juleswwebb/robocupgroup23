@@ -4,6 +4,7 @@ import math
 import unittest
 
 from mission_layout import MissionLayout
+from route_follower import prepare_route
 
 
 class MissionTests(unittest.TestCase):
@@ -43,8 +44,55 @@ class MissionTests(unittest.TestCase):
     def test_opposite_home_forbidden(self):
         mission = MissionLayout()
         self.assertTrue(mission.blocked(325, 2075))
+        self.assertEqual(mission.blocked_reason(325, 2075), "opposite-home exclusion zone")
         mission.my_home = "blue"
         self.assertTrue(mission.blocked(325, 325))
+
+    def test_block_reason_identifies_tight_arena_edge_clearance(self):
+        mission = MissionLayout()
+        self.assertEqual(mission.blocked_reason(300, 500),
+                         "left arena boundary (x=300 < 305 mm clearance)")
+        self.assertIsNone(mission.blocked_reason(325, 500))
+
+    def test_route_continues_away_from_margin_only_edge_overlap(self):
+        mission = MissionLayout()
+        self.assertTrue(mission.route_is_clear_from(
+            (1000, 304), [{"x": 1500, "y": 400}]))
+        self.assertFalse(mission.route_is_clear_from(
+            (1000, 304), [{"x": 1500, "y": 250}]))
+
+    def test_replan_can_escape_a_live_obstacle_margin_without_crossing_other_blocks(self):
+        mission = MissionLayout()
+        mission.live_obstacles.append({"x": 700, "y": 325, "radius": 120})
+        self.assertTrue(mission.blocked(325, 325))  # inflated clearance overlaps pose
+        route = mission.replan_from((325, 325), [{"x": 1600, "y": 800}])
+        self.assertGreaterEqual(len(route), 2)
+        self.assertTrue(route[0].get("escape"))
+        self.assertFalse(mission.blocked(route[0]["x"], route[0]["y"]))
+        self.assertTrue(mission.route_is_clear_from(
+            (route[0]["x"], route[0]["y"]), route[1:]))
+        mission.route = route
+        self.assertTrue(prepare_route(
+            mission, current_local=(0, 0), current_mission=(325, 325),
+            allow_buffered_start=True,
+        ))
+        with self.assertRaisesRegex(ValueError, "Current route start"):
+            prepare_route(mission, current_local=(0, 0), current_mission=(325, 325))
+
+    def test_replan_can_escape_edge_margin_but_not_actual_live_overlap(self):
+        mission = MissionLayout()
+        route = mission.replan_from((300, 1000), [{"x": 1300, "y": 1000}])
+        self.assertGreaterEqual(route[0]["x"], 305)
+
+        mission.live_obstacles.append({"x": 500, "y": 1000, "radius": 120})
+        with self.assertRaisesRegex(ValueError, "live sensor return"):
+            mission.replan_from((300, 1000), [{"x": 1300, "y": 1000}])
+
+        mission = MissionLayout()
+        mission.obstacles.append({"kind": "box", "x": 300, "y": 1000,
+                                  "width": 200, "height": 200, "rotation": 0})
+        with self.assertRaisesRegex(ValueError, "arena boundary"):
+            mission.replan_from((300, 1000), [{"x": 1300, "y": 1000}])
 
     def test_blocked_weight_rejected(self):
         mission = MissionLayout()

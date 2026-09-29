@@ -145,23 +145,37 @@ of a 100% firmware drive limit. Straight travel commands default to 85% left
 and 100% right; small heading corrections stay within the 80–100% moving
 range. A healthy all-out-of-range 8×8 frame is clear space and permits
 movement; a failed/missing frame-health signal stops the route, so upload the
-matching firmware. Central upper-zone 8×8 hits are projected into the Mission
-Planner arena using the 8×8 placement, angle and FOV configured in Arena View.
-Transient obstacles appear as red rings and are not saved with the map. If one
-blocks the remaining route, the app commands STOP, replans from the current
-encoder/IMU pose, then resumes only when a clear detour exists. A hit closer
-than 450 mm, no detour, repeated replans, missing/stale telemetry, pose jumps,
-excess path deviation, no progress, operator takeover, and STOP all halt the
-route. The follower does **not** collect weights, unload, or upload the route
-to the Teensy. Arena View's separate route remains preview-only. Because
-80–100% is a high output and 8×8 obstacle points are approximate, begin
-hardware testing with the wheels raised and then in a clear, supervised area
-with an accessible STOP button. The placement/heading of the 8×8 must be
-checked against real objects before driving: unmappable returns no longer stop
-the route by themselves; only coherent mapped points trigger detours, while a
-return closer than 450 mm still invokes the emergency stop. These are
-provisional odometry scales, not absolute arena
-localisation. Run
+matching firmware. Route obstacle mapping combines enabled VL53 point sensors
+with the central upper 8×8 field. The top-left/top-right VL53 defaults point
+straight ahead; the inward-facing front pairs use their configured 45°
+bearings. A candidate is mapped only after it reappears near the same world
+point on the next telemetry frame, so a single transient sensor return does
+not trigger a detour. The 8×8 rows 0–3 in central columns are eligible; row 4
+and lower are ignored because this mounting sees persistent floor/chassis
+returns there. Invalid/saturated ToF values are ignored. Side ultrasonics are
+configured sideways and shown as wall-range rays in Arena View; they are not
+inserted as generic obstacle points because that would make arena walls look
+like objects to drive around.
+
+Mapped obstacles appear as red rings and are transient. If one blocks the
+remaining route, the app commands STOP, replans from the current encoder/IMU
+pose, then resumes only with a clear detour. If that pose overlaps only the
+extra planning buffer around a live sensor return or arena edge, a clear first
+leg moving away is allowed; otherwise the detour starts with a short waypoint
+out of that buffer. An actual robot-footprint overlap remains a hard failure.
+A 430 mm return is a detour candidate, not an
+automatic route abort; the provisional immediate-stop threshold is 300 mm and
+needs a controlled stopping-distance test on the actual robot.
+No safe detour, repeated replans, missing/stale telemetry, pose jumps, excess
+path deviation, no progress, operator takeover, and STOP still halt the route.
+Replan-stop records include a mission-map snapshot and the exact blocked-pose
+reason (arena edge, drawn obstacle, exclusion zone, or live sensor return) for
+diagnosis. The follower does **not** collect weights, unload, or upload the
+route to the Teensy. Arena View's separate route remains preview-only. Because
+80–100% is a high output and obstacle projection depends on calibrated sensor
+placement, begin hardware testing with the wheels raised and then in a clear,
+supervised area with an accessible STOP button. These are provisional odometry
+scales, not absolute arena localisation. Run
 offline regressions with `QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tools/debug_gui -p 'test_*.py'` from the repo root.
 
 Parameters (Parameters tab, live-tunable):

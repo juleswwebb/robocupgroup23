@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from arena_view import ArenaModel
 from mission_layout import MissionLayout
 from route_follower import RouteFollower
+from route_follower import PointTofStopGuard, prepare_route
 from weight_targeting import WeightTracker
 from DebugGUI import RobotDebugGUI
 
@@ -78,7 +79,7 @@ class WeightTargetingTests(unittest.TestCase):
                                    self.target, 200, 1 + tick * 0.1)
         self.assertFalse(last.pending)
 
-    def test_centering_and_hard_stop(self):
+    def test_centering_and_20mm_range_stop_threshold(self):
         frame = dict(self.frame, **{"tof.xshut5": 150})
         evidence = self._third(frame, front=200)
         self.assertTrue(evidence.confirmed)
@@ -89,9 +90,11 @@ class WeightTargetingTests(unittest.TestCase):
         self.assertEqual(pulse.state, "CENTERING")
         self.assertEqual((pulse.left, pulse.right), (80, -80))
         stop = follower.step(0, 0, math.pi / 2, 149, 1.1, weight=evidence)
-        self.assertTrue(stop.fault)
+        self.assertFalse(stop.fault)
+        self.assertFalse(RouteFollower([(0, 300)]).step(0, 0, math.pi / 2,
+                         430, 1).fault)  # far return triggers mapping/replanning
         self.assertTrue(RouteFollower([(0, 300)]).step(0, 0, math.pi / 2,
-                        200, 1).fault)  # no confirmed target => normal stop
+                        19, 1).fault)  # configured near range stops
 
     def test_confirmed_weight_uses_a_bounded_final_approach_from_search_pose(self):
         evidence = SimpleNamespace(confirmed=True, centered=False,
@@ -161,6 +164,54 @@ class WeightTargetingTests(unittest.TestCase):
         self.assertEqual(gui.route_replans, 0)
         self.assertEqual(self.layout.live_obstacles, [])
         self.assertEqual([args[0] for args, _ in sent], ["stop", "stop", "stop"])
+
+    def test_unplanned_weight_signature_does_not_stop_transit(self):
+        now = time.monotonic()
+        sent = []
+        layout = MissionLayout()
+        layout.route = [{"x": 1600, "y": 325, "target": False}]
+        arena = ArenaModel()
+        arena.sensor_specs = [{"kind": "matrix", "key": "matrix",
+                               "x": 0, "y": 150, "angle": 0, "enabled": True}]
+        arena.latest = {
+            "encoder.0": 10, "encoder.1": -10,
+            "imu.heading": 0, "imu.cal_gyro": 3,
+            "tof.array_frame_ok": True, "tof.array.r3c3": 1000,
+        }
+        arena.detected_weights = [(150.0, 90.0)]
+        fake = SimpleNamespace(
+            route_follower=RouteFollower(prepare_route(layout)),
+            route_last_frame_monotonic=now,
+            route_last_obstacle_frame=now,
+            route_started_at=now,
+            route_awaiting_pose=False, route_awaiting_limit=False,
+            route_pause_until=None, route_resume_after_frame=None,
+            route_replans=0, route_weight_candidate_count=0,
+            route_point_tof_guard=PointTofStopGuard(), route_point_tof_pending=False,
+            route_last_replan_pose=None, route_clearance_hold=False,
+            parameter_values={"drive.max_percent": 100}, telemetry={},
+            arena_view=SimpleNamespace(model=arena),
+            mission_view=SimpleNamespace(
+                model=layout, canvas=SimpleNamespace(update=lambda: None),
+                set_robot_pose=lambda *args: None,
+                set_follow_status=lambda *args, **kwargs: None,
+                refresh_live_obstacles=lambda: None,
+            ),
+            bluetooth=SimpleNamespace(
+                send_command=lambda *args, **kwargs: sent.append((args, kwargs))),
+            recorder=SimpleNamespace(record_command=lambda *args, **kwargs: None,
+                                     record_log=lambda *args, **kwargs: None),
+            _drive_controls_available=lambda: True,
+            _route_front_range=RobotDebugGUI._route_front_range,
+            _route_point_tof_range=RobotDebugGUI._route_point_tof_range,
+            _stop_mission_route=lambda reason: self.fail(reason),
+            add_log=lambda *args: None,
+        )
+
+        RobotDebugGUI._mission_route_step(fake)
+
+        self.assertIsNotNone(fake.route_follower)
+        self.assertEqual(sent[-1][0], ("drive_set",))
 
     def test_final_leg_requires_heading_alignment_and_settle(self):
         follower = RouteFollower([(0, 600)])

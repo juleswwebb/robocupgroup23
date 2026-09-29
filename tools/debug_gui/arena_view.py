@@ -603,6 +603,7 @@ class ArenaView(QWidget):
         self.model.invert_right = self.settings.value("arena/invert_right", True, type=bool)
 
     def _build_specs(self):
+        self._migrate_range_sensor_defaults()
         specs = []
         point_devices = [d for d in self.hardware_map.devices
                          if d.port.startswith("xshut") and d.kind in ("vl53l0x", "vl53l1x")]
@@ -615,7 +616,11 @@ class ArenaView(QWidget):
             # left-side beams rotate toward the robot's right, right-side
             # beams toward its left. Their persisted GUI calibration remains
             # authoritative when the operator has already set an angle.
-            if device.port in ("xshut6", "xshut5"):
+            if device.port in ("xshut0", "xshut1"):
+                # The top pair point straight forward; they are the frontal
+                # wall/obstacle range sensors, not the inward-angled pair.
+                angle_default = 0
+            elif device.port in ("xshut6", "xshut5"):
                 angle_default = 45
             elif device.port in ("xshut3", "xshut4"):
                 angle_default = -45
@@ -631,14 +636,14 @@ class ArenaView(QWidget):
             specs.append(self._placement_spec("matrix", matrix_device.name, "tof.array",
                                               "matrix", 0, 150, 0))
 
-        for index, x_default in ((0, -110), (1, 110)):
+        for index, x_default, angle_default in ((0, 110, 90), (1, -110, -90)):
             signal = f"ultrasonic.{index}"
             device = self.hardware_map.device_for_signal(signal)
             if device is None or device.kind != "ultrasonic":
                 continue
             key = f"ultrasonic{index}"
             specs.append(self._placement_spec(key, device.name, signal,
-                                              "ultrasonic", x_default, 120, 0))
+                                              "ultrasonic", x_default, 0, angle_default))
 
         # The IMU and encoders feed pose integration above, but their board
         # locations are not useful range origins and should not clutter the
@@ -653,6 +658,29 @@ class ArenaView(QWidget):
                 specs.append(self._placement_spec(key, device.name, signal, "marker",
                                                   x_default, y_default, angle_default))
         self.model.sensor_specs = specs
+
+    def _migrate_range_sensor_defaults(self):
+        """Correct old auto-defaults without overwriting user calibration."""
+        version = int(self.settings.value("arena/range_sensor_defaults_version", 0))
+        if version >= 2:
+            return
+        old_defaults = {
+            "xshut0": {"angle": (-45, 0)},
+            "xshut1": {"angle": (45, 0)},
+            "ultrasonic0": {"x": (-110, 110), "y": (120, 0), "angle": (0, 90)},
+            "ultrasonic1": {"x": (110, -110), "y": (120, 0), "angle": (0, -90)},
+        }
+        for key, fields in old_defaults.items():
+            for field, (old_value, corrected_value) in fields.items():
+                setting = f"arena/sensors/{key}/{field}"
+                saved = self.settings.value(setting, None)
+                try:
+                    is_old_default = saved is not None and abs(float(saved) - old_value) < 1e-6
+                except (TypeError, ValueError):
+                    is_old_default = False
+                if is_old_default:
+                    self.settings.setValue(setting, corrected_value)
+        self.settings.setValue("arena/range_sensor_defaults_version", 2)
 
     def _placement_spec(self, key, name, signal, kind, x, y, angle, enabled=True):
         prefix = f"arena/sensors/{key}/"

@@ -71,8 +71,9 @@ from wiring import HardwareMap, WiringPanel
 from arena_view import ArenaView, number
 from mission_view import MissionPlannerView
 from route_follower import (
-    EMERGENCY_STOP_MM, MAP_REQUIRED_MM, RouteFollower, local_to_mission,
-    matrix_obstacle_points, mission_to_local, prepare_route,
+    EMERGENCY_STOP_MM, MAP_REQUIRED_MM, PointTofStopGuard, RouteFollower, local_to_mission,
+    confirm_obstacle_points, matrix_obstacle_points, mission_to_local,
+    point_tof_obstacle_points, prepare_route,
 )
 from weight_targeting import WeightTracker
 
@@ -324,6 +325,8 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry_definitions = {}
         self.telemetry_rows = {}
         self.telemetry_history = {}
+        self.plot_signal_names = set()
+        self.pending_plot_signal_items = []
         self.parameter_editors = {}
         self.command_widgets = {}
         self.dashboard_command_widgets = {}
@@ -341,9 +344,15 @@ class RobotDebugGUI(QMainWindow):
         self.route_awaiting_pose = False
         self.route_awaiting_limit = False
         self.route_last_obstacle_frame = None
+        self.route_previous_obstacle_points = []
+        self.route_older_obstacle_points = []
         self.route_pause_until = None
         self.route_resume_after_frame = None
         self.route_replans = 0
+        self.route_last_replan_pose = None
+        self.route_clearance_hold = False
+        self.route_point_tof_guard = PointTofStopGuard()
+        self.route_point_tof_pending = False
 
         # Recording metadata / parameter snapshot support.
         self.parameter_definitions = {}
@@ -381,6 +390,13 @@ class RobotDebugGUI(QMainWindow):
             self.update_plot
         )
         self.plot_timer.start(50)
+
+        # A connection advertises dozens of signals at once (including all
+        # 64 matrix zones). Batch hidden plot-combo population so each item
+        # does not trigger its own layout/repaint pass during the handshake.
+        self.plot_signal_add_timer = QTimer(self)
+        self.plot_signal_add_timer.setSingleShot(True)
+        self.plot_signal_add_timer.timeout.connect(self._flush_plot_signal_items)
 
         self.recording_timer = QTimer(self)
         self.recording_timer.timeout.connect(
@@ -940,30 +956,23 @@ class RobotDebugGUI(QMainWindow):
             False
         )
 
-        header.setSectionResizeMode(
-            0,
-            header.ResizeMode.ResizeToContents,
-        )
+        # Keep the live table from recalculating content widths on every
+        # signal/row as the initial telemetry catalogue arrives. This was a
+        # noticeable connect-time cost with dozens of sensor signals.
+        header.setSectionResizeMode(0, header.ResizeMode.Interactive)
+        self.telemetry_table.setColumnWidth(0, 105)
 
         header.setSectionResizeMode(
             1,
             header.ResizeMode.Stretch,
         )
 
-        header.setSectionResizeMode(
-            2,
-            header.ResizeMode.ResizeToContents,
-        )
-
-        header.setSectionResizeMode(
-            3,
-            header.ResizeMode.ResizeToContents,
-        )
-
-        header.setSectionResizeMode(
-            4,
-            header.ResizeMode.ResizeToContents,
-        )
+        header.setSectionResizeMode(2, header.ResizeMode.Interactive)
+        self.telemetry_table.setColumnWidth(2, 105)
+        header.setSectionResizeMode(3, header.ResizeMode.Interactive)
+        self.telemetry_table.setColumnWidth(3, 60)
+        header.setSectionResizeMode(4, header.ResizeMode.Interactive)
+        self.telemetry_table.setColumnWidth(4, 100)
 
         telemetry_layout.addWidget(
             self.telemetry_table,
@@ -1575,12 +1584,36 @@ class RobotDebugGUI(QMainWindow):
 
     @staticmethod
     def _route_front_range(frame: dict) -> float | None:
-        # Same central/top field used by firmware navigation. Bottom rows
-        # often see the floor or chassis and are not a forward collision ray.
+        # Use rows 0–3 only. Row 4 on this mounting repeatedly returns the
+        # nearby floor/chassis and is not a forward obstacle measurement.
         values = [number(frame.get(f"tof.array.r{row}c{col}"))
-                  for row in range(5) for col in range(2, 6)]
+                  for row in range(4) for col in range(2, 6)]
         valid = [value for value in values if value is not None and 0 < value < 4000]
         return min(valid) if valid else None
+
+    @staticmethod
+    def _route_point_tof_readings(frame: dict, arena_model) -> dict[str, float]:
+        """All valid configured VL53 returns, keyed by stable sensor ID."""
+        readings = {}
+        for spec in getattr(arena_model, "sensor_specs", []):
+            if (spec.get("kind") != "point" or not spec.get("enabled", True)
+                    or not str(spec.get("key", "")).startswith("xshut")):
+                continue
+            value = number(frame.get(spec.get("signal", "")))
+            if value is not None and 0 < value <= 2500:
+                readings[str(spec["key"])] = value
+        return readings
+
+    @staticmethod
+    def _route_point_tof_range(frame: dict, arena_model) -> tuple[str, float] | None:
+        """Nearest valid configured forward VL53 reading (not sonar)."""
+        readings = RobotDebugGUI._route_point_tof_readings(frame, arena_model)
+        values = []
+        for spec in getattr(arena_model, "sensor_specs", []):
+            key = str(spec.get("key", ""))
+            if key in readings:
+                values.append((str(spec.get("name", key)), readings[key]))
+        return min(values, key=lambda item: item[1]) if values else None
 
     def _start_mission_route(self):
         if self.route_follower is not None:
@@ -1644,9 +1677,15 @@ class RobotDebugGUI(QMainWindow):
         self.route_awaiting_pose = True
         self.route_awaiting_limit = True
         self.route_last_obstacle_frame = None
+        self.route_previous_obstacle_points = []
+        self.route_older_obstacle_points = []
         self.route_pause_until = None
         self.route_resume_after_frame = None
         self.route_replans = 0
+        self.route_last_replan_pose = None
+        self.route_clearance_hold = False
+        self.route_point_tof_guard.reset()
+        self.route_point_tof_pending = False
         self.route_weight_candidate_count = 0
         self.mission_view.model.live_obstacles.clear()
         self.mission_view.refresh_live_obstacles()
@@ -1665,6 +1704,19 @@ class RobotDebugGUI(QMainWindow):
             "MISSION",
             f"Route armed: {len(points)} waypoints; waiting for drive-limit confirmation and fresh pose",
         )
+        layout = self.mission_view.model
+        self.recorder.record_log(
+            "MISSION_MAP",
+            json.dumps({
+                "start": layout.start,
+                "heading_deg": layout.heading_deg,
+                "obstacles": layout.obstacles,
+                "weights": layout.weights,
+                "robot_radius_mm": layout.robot_radius_mm,
+                "margin_mm": layout.margin_mm,
+                "sensors": self.arena_view.model.sensor_specs,
+            }, separators=(",", ":")),
+        )
 
     def _stop_mission_route(self, reason="Stopped", *, send_stop=True):
         if self.route_follower is None:
@@ -1676,6 +1728,10 @@ class RobotDebugGUI(QMainWindow):
         self.route_pause_until = None
         self.route_resume_after_frame = None
         self.route_started_at = None
+        self.route_point_tof_pending = False
+        point_tof_guard = getattr(self, "route_point_tof_guard", None)
+        if point_tof_guard is not None:
+            point_tof_guard.reset()
         if send_stop and self.bluetooth.is_connected():
             self.bluetooth.send_command("stop")
             self.recorder.record_command("stop", {})
@@ -1724,6 +1780,7 @@ class RobotDebugGUI(QMainWindow):
             self._stop_mission_route("8×8 ToF frame read failed or health signal missing")
             return
         model = self.arena_view.model
+        point_tof = RobotDebugGUI._route_point_tof_range(frame, model)
         layout = getattr(self.mission_view, "model", None)
         front_mm = self._route_front_range(frame)
         weight = None
@@ -1739,29 +1796,70 @@ class RobotDebugGUI(QMainWindow):
                 search_waypoint = bool(goal.get("site_search"))
                 weight = tracker.observe(frame, model, layout, target, front_mm,
                                          self.route_last_frame_monotonic)
-        # ArenaView continuously looks for the bottom-near/top-far signature,
-        # including between planned sites. If a new candidate appears while
-        # transiting, stop for review rather than driving past an unplanned
-        # object. At a planned site it must also agree with that mapped target.
+        # The dashboard may mark a bottom-near/top-far signature anywhere.
+        # That is useful map evidence, but it is not enough to interrupt a
+        # route: only WeightTracker's multi-frame, mapped-target match may
+        # authorize a target approach.
         candidates = getattr(model, "detected_weights", [])
         seen_candidates = getattr(self, "route_weight_candidate_count", 0)
         if len(candidates) > seen_candidates:
             self.route_weight_candidate_count = len(candidates)
-            candidate = candidates[-1]
-            if target_leg:
-                planned_local = mission_to_local(
-                    layout.start, layout.heading_deg,
-                    (float(goal.get("target_x", goal["x"])),
-                     float(goal.get("target_y", goal["y"]))))
-                if math.dist(candidate, planned_local) > 250:
-                    self._stop_mission_route(
-                        "Unmapped weight-like object detected; stopped for review")
-                    return
-            else:
-                self._stop_mission_route(
-                    "Weight-like object detected between planned sites; stopped for review")
-                return
-        if weight is not None and weight.pending and front_mm is not None and front_mm < MAP_REQUIRED_MM:
+            self.recorder.record_log(
+                "MISSION_SENSORS",
+                "Weight-like signature marked on map; continuing transit. "
+                "Target approach requires confirmation at a planned weight site.",
+            )
+        intentional_weight_approach = bool(
+            target_leg and weight is not None and (weight.pending or weight.confirmed)
+        )
+        point_tof_guard = getattr(self, "route_point_tof_guard", None)
+        if point_tof_guard is None:
+            point_tof_guard = PointTofStopGuard()
+            self.route_point_tof_guard = point_tof_guard
+        point_tof_readings = RobotDebugGUI._route_point_tof_readings(frame, model)
+        point_tof_guard_state = point_tof_guard.observe(
+            point_tof_readings, self.route_last_frame_monotonic,
+            threshold_mm=EMERGENCY_STOP_MM,
+        )
+        if point_tof_guard_state == "confirmed" and not intentional_weight_approach:
+            self._stop_mission_route(
+                f"Immediate obstacle: {point_tof[0]} at {point_tof[1]:.0f} mm",
+            )
+            return
+        if point_tof_guard_state == "pending" and not intentional_weight_approach:
+            if not getattr(self, "route_point_tof_pending", False):
+                self.bluetooth.send_command("stop")
+                self.recorder.record_command("stop", {})
+                self.route_point_tof_pending = True
+                self.mission_view.set_follow_status(
+                    f"Checking close ToF return from {point_tof[0]}…",
+                    active=True, waypoint=follower.index,
+                )
+                self.recorder.record_log(
+                    "MISSION_SENSORS",
+                    f"Close point-ToF return from {point_tof[0]} at "
+                    f"{point_tof[1]:.0f} mm; holding for confirmation and "
+                    "two clear frames from that same sensor.",
+                )
+            return
+        if getattr(self, "route_point_tof_pending", False):
+            self.route_point_tof_pending = False
+            self.route_resume_after_frame = self.route_last_frame_monotonic
+            self.mission_view.set_follow_status(
+                "Transient close ToF return cleared; resuming route…",
+                active=True, waypoint=follower.index,
+            )
+            self.recorder.record_log(
+                "MISSION_SENSORS",
+                "Close point-ToF hold cleared by two valid clear frames from "
+                "the same sensor; route resuming.",
+            )
+            return
+        target_proximity = [value for value in (
+            front_mm, point_tof[1] if point_tof is not None else None,
+        ) if value is not None]
+        if (weight is not None and weight.pending and target_proximity
+                and min(target_proximity) < MAP_REQUIRED_MM):
             # Stop before collecting more evidence. Never leave the previous
             # motor command running while a close target is ambiguous.
             self.bluetooth.send_command("stop")
@@ -1783,30 +1881,90 @@ class RobotDebugGUI(QMainWindow):
         self.route_resume_after_frame = None
         if self.route_last_obstacle_frame != self.route_last_frame_monotonic:
             self.route_last_obstacle_frame = self.route_last_frame_monotonic
-            points = matrix_obstacle_points(frame, model, layout)
-            if weight is not None and weight.front_is_target:
+            candidates = matrix_obstacle_points(frame, model, layout)
+            # The upper/lower angled ToFs are also the weight classifier. Once
+            # either pair starts showing a weight-like depth gap, do not map
+            # its two returns as separate walls while that classification is
+            # being accumulated. This avoids poisoning A* with a weight pair.
+            weight_votes = getattr(model, "weight_votes", {})
+            excluded_point_keys = set()
+            for top_key, bottom_key in (("xshut6", "xshut5"),
+                                        ("xshut3", "xshut4")):
+                if weight_votes.get(top_key, 0) > 0:
+                    excluded_point_keys.update((top_key, bottom_key))
+            candidates.extend(point_tof_obstacle_points(
+                frame, model, layout, excluded_keys=excluded_point_keys,
+            ))
+            if weight is not None and (weight.front_is_target or weight.confirmed):
                 # The intended weight is not a wall: do not turn its own 8×8
-                # return into an obstacle. Unmatched returns remain hazards.
-                points = [point for point in points
+                # or paired point-ToF returns into a navigation obstacle.
+                candidates = [point for point in candidates
                           if math.dist(point, weight.target) > 170]
                 layout.live_obstacles = [item for item in layout.live_obstacles
                                          if math.dist((item["x"], item["y"]), weight.target) > 170]
-            # A close return that cannot be confidently projected onto the
-            # arena is not, by itself, grounds to abandon the route. Continue
-            # following the planned path; coherent mapped clusters below still
-            # trigger a stop-and-replan, and RouteFollower retains the very-close
-            # emergency stop for an immediate hazard.
-            if layout.add_live_obstacles(points):
+            confirmed_points = confirm_obstacle_points(
+                candidates,
+                getattr(self, "route_previous_obstacle_points", []),
+                getattr(self, "route_older_obstacle_points", []),
+            )
+            self.route_older_obstacle_points = getattr(
+                self, "route_previous_obstacle_points", [],
+            )
+            self.route_previous_obstacle_points = candidates
+            # Three spatially consistent fresh frames are required to map an
+            # obstacle. Immediate near-field point-ToF returns still go
+            # through their separate emergency stop guard.
+            if confirmed_points:
+                self.recorder.record_log(
+                    "MISSION_SENSORS",
+                    f"Confirmed {len(confirmed_points)} mapped obstacle returns; "
+                    f"8x8={len(matrix_obstacle_points(frame, model, layout))}, "
+                    f"point-ToF={len(candidates)}",
+                )
+            added_obstacles = layout.add_live_obstacles(confirmed_points)
+            if added_obstacles:
                 self.mission_view.refresh_live_obstacles()
             current = local_to_mission(layout.start, layout.heading_deg, (model.x, model.y))
             remaining = layout.route[follower.index:]
-            if not layout.route_is_clear_from(current, remaining):
+            route_is_clear = layout.route_is_clear_from(current, remaining)
+            previous_replan_pose = getattr(self, "route_last_replan_pose", None)
+            moved_since_replan = (
+                previous_replan_pose is None
+                or math.dist(current, previous_replan_pose) >= 25
+            )
+            needs_replan = (not route_is_clear
+                            and (added_obstacles > 0 or moved_since_replan))
+            if not route_is_clear and not needs_replan:
+                # An unchanged map and effectively unchanged pose cannot
+                # produce a different A* path. Keep the robot stopped instead
+                # of repeatedly issuing identical re-plans.
+                if not getattr(self, "route_clearance_hold", False):
+                    self.bluetooth.send_command("stop")
+                    self.recorder.record_command("stop", {})
+                    self.recorder.record_log(
+                        "MISSION",
+                        "Holding at blocked route pending new sensor or pose evidence",
+                    )
+                    self.route_clearance_hold = True
+                return
+            if needs_replan:
                 # Stop BEFORE running A*: even a slow plan or Bluetooth delay
                 # must never leave the previous motion command active.
                 self.bluetooth.send_command("stop")
                 self.recorder.record_command("stop", {})
+                self.recorder.record_log(
+                    "MISSION_REPLAN",
+                    json.dumps({
+                        "pose_mm": [round(current[0], 1), round(current[1], 1)],
+                        "blocked_at_pose": layout.blocked_reason(*current),
+                        "live_obstacle_count": len(layout.live_obstacles),
+                        "remaining_waypoints": len(remaining),
+                        "candidate_points": [[round(x, 1), round(y, 1)]
+                                             for x, y in confirmed_points],
+                    }, separators=(",", ":")),
+                )
                 if self.route_replans >= 4:
-                    self._stop_mission_route("More than four obstacle replans")
+                    self._stop_mission_route("More than four obstacle replans", send_stop=False)
                     return
                 targets = [item for item in remaining if item.get("target")]
                 if remaining and (not targets or targets[-1] is not remaining[-1]):
@@ -1815,26 +1973,32 @@ class RobotDebugGUI(QMainWindow):
                     new_route = layout.replan_from(current, targets)
                     layout.route = new_route
                     new_points = prepare_route(layout, current_local=(model.x, model.y),
-                                               current_mission=current)
+                                               current_mission=current,
+                                               allow_buffered_start=True)
                 except (ValueError, KeyError, TypeError) as exc:
-                    self._stop_mission_route(f"No safe detour: {exc}")
+                    self._stop_mission_route(f"No safe detour: {exc}", send_stop=False)
                     return
                 self.route_replans += 1
+                self.route_last_replan_pose = current
+                self.route_clearance_hold = False
                 self.route_follower = RouteFollower(new_points, start_pose=(model.x, model.y))
                 self.route_pause_until = now + 0.5
                 self.route_resume_after_frame = self.route_last_frame_monotonic
                 self.mission_view.canvas.update()
                 self.mission_view.set_follow_status(
-                    f"Replanned around 8×8 obstacle ({self.route_replans}/4)",
+                    f"Route re-planned ({self.route_replans}/4)",
                     active=True, waypoint=0,
                 )
-                self.add_log("INFO", f"Route detour {self.route_replans}: {len(new_route)} waypoints")
+                blocker = layout.blocked_reason(*current) or "remaining path clearance"
+                self.add_log("INFO", f"Route re-plan {self.route_replans} ({blocker}): "
+                             f"{len(new_route)} waypoints")
                 self.recorder.record_log(
                     "MISSION",
-                    f"Obstacle detected; stopped and replanned detour {self.route_replans}/4 "
-                    f"with {len(new_route)} waypoints",
+                    f"Route clearance changed; stopped and re-planned "
+                    f"{self.route_replans}/4 with {len(new_route)} waypoints",
                 )
                 return
+            self.route_clearance_hold = False
         decision = follower.step(model.x, model.y, model.theta, front_mm, now,
                                  weight=weight, target_leg=target_leg,
                                  search_waypoint=search_waypoint)
@@ -2643,12 +2807,14 @@ class RobotDebugGUI(QMainWindow):
     def _update_telemetry_identity(self, name: str):
         row = self.telemetry_rows[name]
         group, label, unit = self._telemetry_metadata(name)
-        self.telemetry_table.setItem(row, 0, QTableWidgetItem(group))
-
-        signal_item = QTableWidgetItem(label)
-        signal_item.setToolTip(name)
-        self.telemetry_table.setItem(row, 1, signal_item)
-        self.telemetry_table.setItem(row, 3, QTableWidgetItem(unit))
+        for column, text in ((0, group), (1, label), (3, unit)):
+            item = self.telemetry_table.item(row, column)
+            if item is None:
+                item = QTableWidgetItem()
+                self.telemetry_table.setItem(row, column, item)
+            item.setText(text)
+            if column == 1:
+                item.setToolTip(name)
 
     @staticmethod
     def _inactive_sensor_signal(name: str) -> bool:
@@ -2736,16 +2902,13 @@ class RobotDebugGUI(QMainWindow):
                 )
             )
 
-            if (
-                self.plot_signal_combo.findData(
-                    name
+            if name not in self.plot_signal_names:
+                self.plot_signal_names.add(name)
+                self.pending_plot_signal_items.append(
+                    (self.signal_display_name(name), name)
                 )
-                < 0
-            ):
-                self.plot_signal_combo.addItem(
-                    self.signal_display_name(name),
-                    name,
-                )
+                if not self.plot_signal_add_timer.isActive():
+                    self.plot_signal_add_timer.start(100)
 
         if self._matrix_coordinates(name) is not None:
             # The 64 zones feed the depth camera rather than 64 dashboard
@@ -2776,25 +2939,19 @@ class RobotDebugGUI(QMainWindow):
             name
         ]
 
-        self.telemetry_table.setItem(
-            row,
-            2,
-            QTableWidgetItem(
-                self.format_value(
-                    value
-                )
-            ),
-        )
+        display_value = self.format_value(value)
+        value_item = self.telemetry_table.item(row, 2)
+        if value_item is None:
+            self.telemetry_table.setItem(row, 2, QTableWidgetItem(display_value))
+        else:
+            value_item.setText(display_value)
 
-        self.telemetry_table.setItem(
-            row,
-            4,
-            QTableWidgetItem(
-                time.strftime(
-                    "%H:%M:%S"
-                )
-            ),
-        )
+        updated_at = time.strftime("%H:%M:%S")
+        time_item = self.telemetry_table.item(row, 4)
+        if time_item is None:
+            self.telemetry_table.setItem(row, 4, QTableWidgetItem(updated_at))
+        else:
+            time_item.setText(updated_at)
 
     @staticmethod
     def format_value(
@@ -2825,18 +2982,32 @@ class RobotDebugGUI(QMainWindow):
         self.telemetry.clear()
         self.telemetry_rows.clear()
         self.telemetry_history.clear()
+        self.plot_signal_add_timer.stop()
+        self.pending_plot_signal_items.clear()
 
         self.telemetry_table.setRowCount(
             0
         )
 
         self.plot_signal_combo.clear()
+        self.plot_signal_names.clear()
 
         self.clear_plots()
-
         self.tof_view.reset()
-
         self.start_time = time.monotonic()
+
+    def _flush_plot_signal_items(self):
+        if not self.pending_plot_signal_items:
+            return
+        pending = self.pending_plot_signal_items
+        self.pending_plot_signal_items = []
+        self.plot_signal_combo.setUpdatesEnabled(False)
+        try:
+            for label, name in pending:
+                self.plot_signal_combo.addItem(label, name)
+        finally:
+            self.plot_signal_combo.setUpdatesEnabled(True)
+            self.plot_signal_combo.update()
 
     # =================================================================
     # Live plotting

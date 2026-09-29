@@ -13,6 +13,9 @@ class FakeSettings:
     def value(self, key, default=None, type=None):
         return self.values.get(key, default)
 
+    def setValue(self, key, value):
+        self.values[key] = value
+
 
 class PlacementTests(unittest.TestCase):
     def test_installed_sensor_names_and_heights_follow_wiring(self):
@@ -20,6 +23,7 @@ class PlacementTests(unittest.TestCase):
         holder.model = ArenaModel()
         holder.settings = FakeSettings()
         holder._placement_spec = ArenaView._placement_spec.__get__(holder)
+        holder._migrate_range_sensor_defaults = ArenaView._migrate_range_sensor_defaults.__get__(holder)
         holder.hardware_map, warning = HardwareMap.load(HardwareMap.default_path())
         self.assertIsNone(warning)
         ArenaView._build_specs(holder)
@@ -40,9 +44,15 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(specs["xshut5"]["angle"], 45)
         self.assertEqual(specs["xshut3"]["angle"], -45)
         self.assertEqual(specs["xshut4"]["angle"], -45)
+        self.assertEqual(specs["xshut0"]["angle"], 0)
+        self.assertEqual(specs["xshut1"]["angle"], 0)
         self.assertEqual(specs["ultrasonic0"]["name"], "Ultrasonic_Right")
         self.assertEqual(specs["ultrasonic1"]["name"], "Ultrasonic_Left")
         self.assertEqual(specs["ultrasonic0"]["kind"], "ultrasonic")
+        self.assertEqual((specs["ultrasonic0"]["x"], specs["ultrasonic0"]["y"],
+                          specs["ultrasonic0"]["angle"]), (110, 0, 90))
+        self.assertEqual((specs["ultrasonic1"]["x"], specs["ultrasonic1"]["y"],
+                          specs["ultrasonic1"]["angle"]), (-110, 0, -90))
         self.assertEqual(specs["matrix"]["name"], "8×8 ToF array")
         self.assertTrue(all("height_mm" in spec for spec in specs.values()))
         for key in ("ir0", "ir1", "ir2", "ir3", "colour", "imu", "encoder0", "encoder1"):
@@ -60,6 +70,30 @@ class PlacementTests(unittest.TestCase):
         renamed = {spec["key"]: spec for spec in holder.model.sensor_specs}
         self.assertEqual(renamed["ultrasonic0"]["name"], "Right sonar")
         self.assertEqual(renamed["ultrasonic0"]["height_mm"], 275)
+
+    def test_old_automatic_sensor_angles_migrate_but_custom_positions_survive(self):
+        holder = type("PlacementHolder", (), {})()
+        holder.model = ArenaModel()
+        holder.settings = FakeSettings()
+        holder.settings.values.update({
+            "arena/sensors/xshut0/angle": -45,
+            "arena/sensors/ultrasonic0/x": -110,
+            "arena/sensors/ultrasonic0/y": 120,
+            "arena/sensors/ultrasonic0/angle": 0,
+            "arena/sensors/xshut1/angle": 12,
+        })
+        holder._placement_spec = ArenaView._placement_spec.__get__(holder)
+        holder._migrate_range_sensor_defaults = ArenaView._migrate_range_sensor_defaults.__get__(holder)
+        holder.hardware_map, warning = HardwareMap.load(HardwareMap.default_path())
+        self.assertIsNone(warning)
+        ArenaView._build_specs(holder)
+        specs = {spec["key"]: spec for spec in holder.model.sensor_specs}
+        self.assertEqual(specs["xshut0"]["angle"], 0)
+        self.assertEqual(specs["ultrasonic0"]["x"], 110)
+        self.assertEqual(specs["ultrasonic0"]["y"], 0)
+        self.assertEqual(specs["ultrasonic0"]["angle"], 90)
+        self.assertEqual(specs["xshut1"]["angle"], 12)
+        self.assertEqual(holder.settings.values["arena/range_sensor_defaults_version"], 2)
 
 
 if __name__ == "__main__":
