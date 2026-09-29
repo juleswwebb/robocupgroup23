@@ -149,20 +149,36 @@ class RouteFollowerTests(unittest.TestCase):
         layout = MissionLayout()
         arena = ArenaModel()
         arena.sensor_specs = [
-            {"key": "xshut0", "name": "Top_Left", "signal": "tof.xshut0",
+            {"key": "xshut8", "name": "Top_Left", "signal": "tof.xshut8",
              "kind": "point", "x": -90, "y": 140, "angle": 0, "enabled": True},
-            {"key": "xshut1", "name": "Top_Right", "signal": "tof.xshut1",
+            {"key": "xshut7", "name": "Top_Right", "signal": "tof.xshut7",
              "kind": "point", "x": 90, "y": 140, "angle": 0, "enabled": True},
         ]
-        frame = {"tof.xshut0": 20, "tof.xshut1": 8191}
+        frame = {"tof.xshut8": 20, "tof.xshut7": 8191}
         points = point_tof_obstacle_points(frame, arena, layout)
         self.assertEqual(len(points), 1)
         self.assertAlmostEqual(points[0][0], 485, delta=1)
         self.assertAlmostEqual(points[0][1], 235, delta=1)
         excluded = point_tof_obstacle_points(
-            frame, arena, layout, excluded_keys={"xshut0"},
+            frame, arena, layout, excluded_keys={"xshut8"},
         )
         self.assertEqual(excluded, [])
+
+    def test_all_six_wired_point_tofs_reach_navigation_by_signal_id(self):
+        arena = ArenaModel()
+        arena.sensor_specs = [
+            {"key": f"xshut{n}", "name": f"Sensor {n}",
+             "signal": f"tof.xshut{n}", "kind": "point", "enabled": True,
+             "x": 0, "y": 140, "angle": 0}
+            for n in range(3, 9)
+        ]
+        frame = {f"tof.xshut{n}": 100 + n for n in range(3, 9)}
+        frame["ultrasonic.0"] = 150
+        readings = RobotDebugGUI._route_point_tof_readings(frame, arena)
+        self.assertEqual(readings,
+                         {f"xshut{n}": 100 + n for n in range(3, 9)})
+        arena.sensor_specs[-1]["enabled"] = False
+        self.assertNotIn("xshut8", RobotDebugGUI._route_point_tof_readings(frame, arena))
 
     def test_sensor_obstacle_point_requires_three_nearby_frames(self):
         self.assertEqual(confirm_obstacle_points([(800, 900)], []), [])
@@ -180,12 +196,12 @@ class RouteFollowerTests(unittest.TestCase):
         layout.route = [{"x": 1600, "y": 325, "target": True}]
         arena = ArenaModel()
         arena.sensor_specs = [{
-            "key": "xshut0", "name": "Top_Left", "signal": "tof.xshut0",
+            "key": "xshut8", "name": "Top_Left", "signal": "tof.xshut8",
             "kind": "point", "x": -90, "y": 140, "angle": 0, "enabled": True,
         }]
         arena.latest = {"encoder.0": 10, "encoder.1": -10,
                         "imu.heading": 0, "imu.cal_gyro": 3,
-                        "tof.array_frame_ok": True, "tof.xshut0": 430}
+                        "tof.array_frame_ok": True, "tof.xshut8": 430}
         fake = SimpleNamespace(
             route_follower=RouteFollower(prepare_route(layout)),
             route_last_frame_monotonic=time.monotonic(), route_last_obstacle_frame=None,

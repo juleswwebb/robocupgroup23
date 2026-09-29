@@ -6,7 +6,7 @@ import json
 import math
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
@@ -54,8 +54,7 @@ class MissionCanvas(QWidget):
             if item["kind"] == "tube":
                 inside = math.hypot(x-item["x"], y-item["y"]) <= item["width"]/2
             else:
-                x0, y0, x1, y1 = self.model.obstacle_rect(item)
-                inside = x0 <= x <= x1 and y0 <= y <= y1
+                inside = self.model.obstacle_distance(item, x, y) == 0
             if inside:
                 return ("obstacle", item)
         return None
@@ -78,7 +77,7 @@ class MissionCanvas(QWidget):
             self.selected = ("weight", item)
             self.changed.emit()
         elif self.tool in ("Wall", "Ramp", "Tube"):
-            sizes = {"Wall": (700, 110), "Ramp": (700, 380), "Tube": (320, 320)}
+            sizes = {"Wall": (600, 130), "Ramp": (700, 380), "Tube": (320, 320)}
             width, height = sizes[self.tool]
             item = {"kind": self.tool.lower(), "x": x, "y": y,
                     "width": width, "height": height, "rotation": 0}
@@ -119,8 +118,9 @@ class MissionCanvas(QWidget):
     def rotate_selected(self):
         if self.selected and self.selected[0] == "obstacle":
             item = self.selected[1]
-            item["rotation"] = (item.get("rotation", 0)+90) % 180
+            item["rotation"] = (item.get("rotation", 0)+90) % 360
             self.changed.emit()
+            self.selection_changed.emit()
 
     def paintEvent(self, _event):
         m = self.model
@@ -150,8 +150,8 @@ class MissionCanvas(QWidget):
             if item["kind"] == "tube":
                 p.drawEllipse(self._point(item["x"], item["y"]), item["width"]*scale/2, item["width"]*scale/2)
             else:
-                x0, y0, x1, y1 = m.obstacle_rect(item)
-                p.drawRect(QRectF(self._point(x0, y0), self._point(x1, y1)))
+                p.drawPolygon(QPolygonF([self._point(x, y)
+                                          for x, y in m.obstacle_corners(item)]))
         # Red rings are transient 8x8 detections, separate from the manually
         # placed orange obstacles and never saved as part of the arena layout.
         for item in m.live_obstacles:
@@ -262,6 +262,13 @@ class MissionPlannerView(QWidget):
         self.height_spin.valueChanged.connect(self._dimension_changed)
         form.addRow("Width / diameter mm", self.width_spin)
         form.addRow("Depth mm", self.height_spin)
+        self.rotation_spin = QDoubleSpinBox()
+        self.rotation_spin.setRange(-180, 180)
+        self.rotation_spin.setDecimals(1)
+        self.rotation_spin.setSingleStep(1)
+        self.rotation_spin.setSuffix("°")
+        self.rotation_spin.valueChanged.connect(self._rotation_changed)
+        form.addRow("Rotation", self.rotation_spin)
         self.radius_spin = QDoubleSpinBox(); self.radius_spin.setRange(50, 600)
         self.radius_spin.setValue(self.model.robot_radius_mm)
         self.radius_spin.valueChanged.connect(self._clearance_changed)
@@ -270,8 +277,9 @@ class MissionPlannerView(QWidget):
         self.margin_spin.setValue(self.model.margin_mm)
         self.margin_spin.valueChanged.connect(self._clearance_changed)
         form.addRow("Safety margin mm", self.margin_spin)
-        rotate = QPushButton("Rotate selected 90°"); rotate.clicked.connect(self.canvas.rotate_selected)
-        form.addRow(rotate)
+        self.rotate_button = QPushButton("Rotate selected 90°")
+        self.rotate_button.clicked.connect(self.canvas.rotate_selected)
+        form.addRow(self.rotate_button)
         delete = QPushButton("Delete selected"); delete.clicked.connect(self.canvas.delete_selected)
         form.addRow(delete)
         clear_live = QPushButton("Clear live sensor obstacle marks")
@@ -325,10 +333,17 @@ class MissionPlannerView(QWidget):
         self.selected_label.setText("None" if not selected else selected[0].upper())
         enabled = selected is not None and selected[0] == "obstacle"
         self.width_spin.setEnabled(enabled); self.height_spin.setEnabled(enabled)
+        can_rotate = enabled and item["kind"] != "tube"
+        self.rotation_spin.setEnabled(can_rotate)
+        self.rotate_button.setEnabled(can_rotate)
         if enabled:
             self.width_spin.blockSignals(True); self.height_spin.blockSignals(True)
+            self.rotation_spin.blockSignals(True)
             self.width_spin.setValue(item["width"]); self.height_spin.setValue(item["height"])
+            rotation = (item.get("rotation", 0) + 180) % 360 - 180
+            self.rotation_spin.setValue(rotation)
             self.width_spin.blockSignals(False); self.height_spin.blockSignals(False)
+            self.rotation_spin.blockSignals(False)
 
     def _dimension_changed(self, _value):
         selected = self.canvas.selected
@@ -336,6 +351,12 @@ class MissionPlannerView(QWidget):
             item = selected[1]
             item["width"] = self.width_spin.value()
             item["height"] = self.width_spin.value() if item["kind"] == "tube" else self.height_spin.value()
+            self._changed()
+
+    def _rotation_changed(self, value):
+        selected = self.canvas.selected
+        if selected and selected[0] == "obstacle" and selected[1]["kind"] != "tube":
+            selected[1]["rotation"] = value
             self._changed()
 
     def _changed(self):

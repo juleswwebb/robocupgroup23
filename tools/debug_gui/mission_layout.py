@@ -35,11 +35,35 @@ class MissionLayout:
         return (0, 0, self.HOME_MM, self.HOME_MM)
 
     def obstacle_rect(self, item):
-        width, height = item["width"], item["height"]
-        if item.get("rotation", 0) % 180 == 90:
-            width, height = height, width
-        return (item["x"] - width/2, item["y"] - height/2,
-                item["x"] + width/2, item["y"] + height/2)
+        """Axis-aligned bounds for display/inspection, not collision checks."""
+        corners = self.obstacle_corners(item)
+        return (min(x for x, _ in corners), min(y for _, y in corners),
+                max(x for x, _ in corners), max(y for _, y in corners))
+
+    @staticmethod
+    def obstacle_corners(item):
+        """Corners of a rectangular obstacle rotated about its centre."""
+        angle = math.radians(item.get("rotation", 0))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        half_width, half_height = item["width"] / 2, item["height"] / 2
+        return tuple((item["x"] + dx * cosine - dy * sine,
+                      item["y"] + dx * sine + dy * cosine)
+                     for dx, dy in ((-half_width, -half_height),
+                                    (half_width, -half_height),
+                                    (half_width, half_height),
+                                    (-half_width, half_height)))
+
+    @staticmethod
+    def obstacle_distance(item, x, y):
+        """Distance to the actual rotated rectangle; zero inside it."""
+        angle = math.radians(item.get("rotation", 0))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        dx, dy = x - item["x"], y - item["y"]
+        local_x = dx * cosine + dy * sine
+        local_y = -dx * sine + dy * cosine
+        outside_x = max(abs(local_x) - item["width"] / 2, 0)
+        outside_y = max(abs(local_y) - item["height"] / 2, 0)
+        return math.hypot(outside_x, outside_y)
 
     def blocked_reason(self, x, y):
         """Explain which inflated arena feature occupies a robot-centre pose."""
@@ -61,8 +85,7 @@ class MissionLayout:
                 if math.hypot(x - item["x"], y - item["y"]) <= item["width"]/2 + clearance:
                     return f"drawn obstacle {index} ({item.get('kind', 'obstacle')})"
             else:
-                x0, y0, x1, y1 = self.obstacle_rect(item)
-                if x0 - clearance <= x <= x1 + clearance and y0 - clearance <= y <= y1 + clearance:
+                if self.obstacle_distance(item, x, y) <= clearance:
                     return f"drawn obstacle {index} ({item.get('kind', 'obstacle')})"
         for index, item in enumerate(self.live_obstacles, 1):
             if math.hypot(x - item["x"], y - item["y"]) <= item["radius"] + clearance:
@@ -114,8 +137,7 @@ class MissionLayout:
                 if math.hypot(x - item["x"], y - item["y"]) <= item["width"] / 2 + radius:
                     return True
             else:
-                x0, y0, x1, y1 = self.obstacle_rect(item)
-                if x0 - radius <= x <= x1 + radius and y0 - radius <= y <= y1 + radius:
+                if self.obstacle_distance(item, x, y) <= radius:
                     return True
         return any(item["dummy"] and
                    math.hypot(x - item["x"], y - item["y"]) <= 120 + radius

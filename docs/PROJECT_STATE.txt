@@ -1,5 +1,25 @@
 # Robocup Group 23 Project State
 
+2026-09-30 Mission Planner wall editing: newly placed walls default to
+600 x 130 mm. The selected wall/ramp has a rotation field accepting any
+angle from -180 to +180 degrees in 0.1-degree increments. Rendering,
+selection, saved layout, route blocking, and chassis-clearance checks now
+use the same rotated rectangle. Existing saved walls keep their dimensions
+and rotations. Offline mission geometry tests pass; GUI hardware operation
+has not been physically verified.
+
+2026-09-30 navigation wiring audit: firmware and the Wiring tab agree on six
+VL53L1X point sensors through SX1509 0x71: logical xshut3/4/5/6/7/8 map to
+IO8/5/6/7/9/10. The last two are now named Top_Right and Top_Left. Arena
+View gives these straight-ahead placement defaults, while the first four
+retain inward 45-degree upper/lower roles. User-saved placement and enable
+settings override defaults. The Mission Planner receives all six by telemetry
+ID, and weight detection requires both enabled sensors in a pair. Side
+ultrasonics are visual wall rays, not obstacle-planner inputs. Encoder/IMU
+telemetry drives pose; optical flow and inductive data do not yet affect
+route decisions. The separate firmware avoidance test still uses 8x8/IMU.
+Offline GUI suite: 77 tests pass. No physical navigation run was performed.
+
 2026-09-29 00:54 run follow-up: drive commands show repeated hard
 80/-80-degree pivots as the follower corrected heading; the old controller
 switched to a pivot above 8° and could chatter around that cutoff. It now
@@ -258,8 +278,8 @@ The firmware's logical `tof_xshutN` names retain existing robot roles; the physi
 | Front_Bottom_Right | IO5 | VL53L1X | `0x36` | `tof_xshut4` |
 | Front_Bottom_Left | IO6 | VL53L1X | `0x37` | `tof_xshut5` |
 | Front_Top_Left | IO7 | VL53L1X | `0x38` | `tof_xshut6` |
-| ToF IO9 | IO9 | VL53L1X | `0x39` | `tof_xshut7` |
-| ToF IO10 | IO10 | VL53L1X | `0x3A` | `tof_xshut8` |
+| Top_Right | IO9 | VL53L1X | `0x39` | `tof_xshut7` |
+| Top_Left | IO10 | VL53L1X | `0x3A` | `tof_xshut8` |
 
 At boot, all 16 outputs on the add-on SX1509 are configured as outputs and driven low, matching the reference project's reset sequence. `SensorManager::beginAll()` then starts the six used channels in registration order: release one XSHUT, power-cycle/retry initialization, assign its unique address, and only then release the next sensor. All six VL53L1X channels use Short mode, an 8x8 ROI, a 50 ms timing budget, and continuous ranging at a 50 ms period. The driver polls again after I2C errors so a transient failure does not permanently strand a sensor. Fresh weak/no-return results are exposed as 0 mm, while other bad statuses and stale samples remain invalid.
 
@@ -274,7 +294,7 @@ Status terms:
 
 | Hardware | Code status | Last known hardware status | Main files |
 |---|---|---|---|
-| 6 x VL53L1X | Implemented through the common distance API; add-on SX1509 `0x71` IO5/6/7/8/9/10 channels are sequenced, assigned unique addresses, and retried at startup | **Live checked 29 September 2026 after upload:** expander present; all six initialize. IO8/IO5/IO6/IO9/IO10 report 1018/803/753/102/23 mm in the sample; IO7 reports range status 4 (no usable return in that frame). IO9/IO10 arena positions start disabled until configured. | `DistanceSensors.cpp`, `VL53L1XSensor.cpp`, `sensor_config.h` |
+| 6 x VL53L1X | Implemented through the common distance API; add-on SX1509 `0x71` IO5/6/7/8/9/10 channels are sequenced, assigned unique addresses, and retried at startup | **Live checked 29 September 2026 after upload:** expander present; all six initialize. IO8/IO5/IO6/IO9/IO10 report 1018/803/753/102/23 mm in the sample; IO7 reports range status 4 (no usable return in that frame). IO9/IO10 now have provisional enabled arena placements; physical positions remain unverified. | `DistanceSensors.cpp`, `VL53L1XSensor.cpp`, `sensor_config.h` |
 | DFRobot 8x8 TOF | Full 64-zone reads, centre value and minimum value implemented; hardware polling is limited to 10 Hz with a 150 ms timeout | **Live frame received 29 September 2026** (18 valid zones in the sampled frame); full 64-zone grids were also observed on 22 September 2026. | `MatrixLidarSensor.cpp`, `DistanceSensors.cpp` |
 | Serial TOF | Nine-byte frame parser retained but disabled | **Parked:** Serial2 D7/D8 are now main-drive PWM outputs | `SerialTofSensor.cpp`, `sensor_config.h` |
 | USB/Bluetooth debug application | Same non-blocking JSON protocol on USB Serial or CH9143 Serial1 | **Previously verified on both transports; latest protocol adds a servo angle command and telemetry and still needs a hardware regression.** | `Console.cpp`, `DebugProtocol.cpp`, `BluetoothSerial.py` |
@@ -449,7 +469,7 @@ The active protocol is transport-independent and works over direct Teensy USB `S
 8. **Unsolicited Serial1 output is deliberately disabled.** A startup beacon could stall the cooperative scheduler when the radio path was unavailable. Bluetooth transmits only after receiving the app's `hello`, so an absent radio cannot stall sensors, STOP handling, or USB telemetry.
 9. **Documentation naming is slightly inconsistent.** The actual centre-zone telemetry key is `tof.8x8`; older GUI documentation refers to `tof.array_centre`.
 10. **Robot behaviour modules are still inherited stubs.** Do not mistake successful compilation for autonomous readiness.
-11. **One point-ToF channel had no usable range in the latest sample.** After the remap, the SX1509 and all six L1X sensors initialized; IO8/IO5/IO6/IO9/IO10 returned ranges, while `tof_xshut6` on IO7 reported range status 4 for that frame. This is a measurement-status result, not an initialization or I2C failure. IO9/IO10 arena placements start disabled until their positions are measured and entered.
+11. **One point-ToF channel had no usable range in the latest sample.** After the remap, the SX1509 and all six L1X sensors initialized; IO8/IO5/IO6/IO9/IO10 returned ranges, while `tof_xshut6` on IO7 reported range status 4 for that frame. This is a measurement-status result, not an initialization or I2C failure. The current wiring file labels IO9/IO10 Top_Right/Top_Left. Arena View enables them with provisional positions of right/left 90 mm, forward 140 mm and straight-ahead aim; measure and calibrate these before relying on obstacle projection.
 
 ## Recommended next integration order
 
@@ -575,6 +595,15 @@ ARENA VIEW AND NAVIGATION
   drivers and raw serial output are unchanged. A measured-distance
   encoder calibration helper saves each wheel's scale and direction in
   desktop QSettings; wheel track and real-world accuracy still require tests.
+- The Mission Planner reads all six point-ToF channels by stable signal ID.
+  IO8/5/6/7 are the inward-facing front upper/lower pairs for weight evidence;
+  IO9/10 are the straight-ahead top right/left sensors. Side ultrasonics are
+  displayed as wall-range rays, while encoder 0/1 and the IMU determine pose.
+  The 8x8 array supplies forward ranging and route obstacle candidates.
+  Optical flow and inductive sensing do not yet correct pose or plan the route.
+  The firmware's separate Arena View START NAVIGATION controller still uses
+  8x8/IMU avoidance only; it does not follow Mission Planner paths. The
+  operator-set 20 mm obstacle mapping threshold limits detours during tests.
 - Two drum/reel outputs use D28 and D29,
   assuming a servo/PPM motor driver like Group 7's DFR0513. `DrumControl.cpp`
   starts neutral, permits +/-100%, and neutralises after 300 ms without a

@@ -27,12 +27,12 @@
       "port": "xshut6"
     },
     {
-      "name": "ToF IO9 (location TBD)",
+      "name": "Top_Right",
       "kind": "vl53l1x",
       "port": "xshut7"
     },
     {
-      "name": "ToF IO10 (location TBD)",
+      "name": "Top_Left",
       "kind": "vl53l1x",
       "port": "xshut8"
     },

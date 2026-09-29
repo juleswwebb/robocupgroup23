@@ -133,8 +133,12 @@ zone, draggable start/real weights/dummy weights/walls/ramps/tubes, adjustable
 obstacle dimensions and clearance, and a route through real weights with an
 optional return-home leg. Hollow pink circles are unconfirmed live TOF weight
 candidates transformed from the Arena View pose. The plan is saved in desktop
-settings. After planning, **FOLLOW ROUTE** can command the existing drive
-motors from the desktop app over USB or Bluetooth. It requires Debug Mode,
+settings. New walls default to 600 × 130 mm. Select a wall or ramp to enter
+any angle in the Rotation field; the drawing and route clearance use the
+rotated shape. Existing saved obstacle sizes and angles are retained.
+
+After planning, **FOLLOW ROUTE** can command the existing drive motors from
+the desktop app over USB or Bluetooth. It requires Debug Mode,
 fresh encoder/gyro telemetry, a healthy 8×8 ToF frame, a stopped robot,
 and explicit confirmation that the physical start pose matches the marked
 start and arrow. The app must remain open and connected; it sends fresh
@@ -145,12 +149,15 @@ of a 100% firmware drive limit. Straight travel commands default to 85% left
 and 100% right; small heading corrections stay within the 80–100% moving
 range. A healthy all-out-of-range 8×8 frame is clear space and permits
 movement; a failed/missing frame-health signal stops the route, so upload the
-matching firmware. Route obstacle mapping combines enabled VL53 point sensors
-with the central upper 8×8 field. The top-left/top-right VL53 defaults point
-straight ahead; the inward-facing front pairs use their configured 45°
-bearings. A candidate is mapped only after it reappears near the same world
-point on the next telemetry frame, so a single transient sensor return does
-not trigger a detour. The 8×8 rows 0–3 in central columns are eligible; row 4
+matching firmware. Route obstacle mapping reads all six installed VL53L1X
+point sensors on the SX1509 at 0x71: IO8/5/6/7 are the inward-facing front
+top/bottom pairs, while IO9/10 are the straight-ahead top right/left wall
+sensors. Their positions, angles and enabled state come from Arena View,
+keyed by XSHUT channel, so Wiring-tab renames do not move them. The central
+upper 8×8 field also supplies candidate points. A candidate is mapped only
+after it reappears near the same world point across three telemetry frames,
+so a single transient sensor return does not trigger a detour. The 8×8 rows
+0–3 in central columns are eligible; row 4
 and lower are ignored because this mounting sees persistent floor/chassis
 returns there. Invalid/saturated ToF values are ignored. Side ultrasonics are
 configured sideways and shown as wall-range rays in Arena View; they are not
@@ -163,9 +170,10 @@ pose, then resumes only with a clear detour. If that pose overlaps only the
 extra planning buffer around a live sensor return or arena edge, a clear first
 leg moving away is allowed; otherwise the detour starts with a short waypoint
 out of that buffer. An actual robot-footprint overlap remains a hard failure.
-A 430 mm return is a detour candidate, not an
-automatic route abort; the provisional immediate-stop threshold is 300 mm and
-needs a controlled stopping-distance test on the actual robot.
+The current operator-set obstacle mapping and immediate-stop threshold is only
+20 mm. A 430 mm return is therefore visible in Arena View but does not create
+a Mission Planner detour. This is a testing setting, not a verified stopping
+distance for a robot moving at 80–100%.
 No safe detour, repeated replans, missing/stale telemetry, pose jumps, excess
 path deviation, no progress, operator takeover, and STOP still halt the route.
 Replan-stop records include a mission-map snapshot and the exact blocked-pose

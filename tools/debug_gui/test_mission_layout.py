@@ -101,6 +101,36 @@ class MissionTests(unittest.TestCase):
                                   "width": 320, "height": 320, "rotation": 0})
         self.assertFalse(mission.plan())
 
+    def test_arbitrary_wall_angle_drives_exact_collision_and_route_clearance(self):
+        mission = MissionLayout()
+        mission.robot_radius_mm = mission.margin_mm = 0
+        wall = {"kind": "wall", "x": 2000, "y": 1200,
+                "width": 600, "height": 130, "rotation": 45}
+        mission.obstacles.append(wall)
+        self.assertTrue(mission.blocked(2200, 1400))  # along the long axis
+        self.assertFalse(mission.blocked(2250, 1200))  # inside AABB, outside rotated wall
+        self.assertTrue(mission._segment_clear((2250, 1050), (2250, 1350)))
+        mission.robot_radius_mm = 120
+        self.assertTrue(mission.blocked(2250, 1200))  # inflated chassis clearance
+        mission.robot_radius_mm = 0
+        wall["rotation"] = 0
+        self.assertFalse(mission._segment_clear((2250, 1050), (2250, 1350)))
+
+    def test_rotated_wall_persists_with_legacy_right_angle_wall(self):
+        mission = MissionLayout()
+        mission.obstacles = [
+            {"kind": "wall", "x": 1500, "y": 1000, "width": 600,
+             "height": 130, "rotation": 37.5},
+            {"kind": "wall", "x": 2500, "y": 1000, "width": 600,
+             "height": 130, "rotation": 90},
+        ]
+        restored = MissionLayout()
+        restored.load_dict(mission.to_dict())
+        self.assertEqual([wall["rotation"] for wall in restored.obstacles], [37.5, 90])
+        x0, y0, x1, y1 = restored.obstacle_rect(restored.obstacles[1])
+        self.assertAlmostEqual(x1-x0, 130)
+        self.assertAlmostEqual(y1-y0, 600)
+
 
 if __name__ == "__main__":
     unittest.main()

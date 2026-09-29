@@ -9,6 +9,7 @@
 #include "DrumControl.h"
 #include "MagnetControl.h"
 #include "Navigation.h"
+#include "MissionNavigation.h"
 #include "Console.h"
 #include "sensor_config.h"
 #include "sensors.h"
@@ -270,6 +271,19 @@ static void send_telemetry_definitions() {
     send_telemetry_definition("navigation.left_mm", "Left clearance", "Navigation", "mm");
     send_telemetry_definition("navigation.right_mm", "Right clearance", "Navigation", "mm");
     send_telemetry_definition("navigation.target_heading", "Turn target", "Navigation", "deg");
+    send_telemetry_definition("mission.ready", "Mission uploaded", "Mission", "bool", false);
+    send_telemetry_definition("mission.active", "Robot-side mission active", "Mission", "bool", false);
+    send_telemetry_definition("mission.state", "Mission phase", "Mission", "state", false);
+    send_telemetry_definition("mission.reason", "Mission detail", "Mission", "text", false);
+    send_telemetry_definition("mission.waypoint_index", "Current waypoint", "Mission", "index", false);
+    send_telemetry_definition("mission.waypoint_count", "Uploaded waypoints", "Mission", "count", false);
+    send_telemetry_definition("mission.pose_x_mm", "Mission X", "Mission", "mm");
+    send_telemetry_definition("mission.pose_y_mm", "Mission Y", "Mission", "mm");
+    send_telemetry_definition("mission.heading_deg", "Mission heading", "Mission", "deg");
+    send_telemetry_definition("mission.front_mm", "Mission forward clearance", "Mission", "mm");
+    send_telemetry_definition("mission.left_mm", "Mission left clearance", "Mission", "mm");
+    send_telemetry_definition("mission.right_mm", "Mission right clearance", "Mission", "mm");
+    send_telemetry_definition("mission.detour_count", "Mission detours", "Mission", "count", false);
     send_telemetry_definition("bluetooth.active", "Bluetooth transport active", "Communications", "bool", false);
     send_telemetry_definition("bluetooth.rx_bytes", "Bluetooth raw bytes received", "Communications", "bytes");
     send_telemetry_definition("bluetooth.rx_lines", "Bluetooth newline frames received", "Communications", "lines");
@@ -437,6 +451,17 @@ static void send_definitions() {
         arg["label"] = "Enabled";
         arg["type"] = "bool";
         arg["default"] = false;
+        send(doc);
+    }
+    // Mission upload is driven by the dedicated planner UI. These definitions
+    // advertise the operator actions without exposing partial-upload internals.
+    for (const char* commandName : {"mission_start", "mission_resume", "mission_stop"}) {
+        JsonDocument doc;
+        doc["type"] = "command_definition";
+        doc["name"] = commandName;
+        doc["label"] = commandName;
+        doc["description"] = "Robot-side mission control; upload the planner route before starting.";
+        doc["args"].to<JsonArray>();
         send(doc);
     }
     {
@@ -673,6 +698,22 @@ void debug_protocol_send_telemetry() {
     if (navigation_get_right_mm()) data["navigation.right_mm"] = navigation_get_right_mm();
     else data["navigation.right_mm"] = nullptr;
     data["navigation.target_heading"] = navigation_get_target_heading();
+    data["mission.ready"] = mission_is_ready();
+    data["mission.active"] = mission_is_active();
+    data["mission.state"] = mission_state();
+    data["mission.reason"] = mission_reason();
+    data["mission.waypoint_index"] = mission_waypoint_index();
+    data["mission.waypoint_count"] = mission_waypoint_count();
+    data["mission.pose_x_mm"] = mission_x_mm();
+    data["mission.pose_y_mm"] = mission_y_mm();
+    data["mission.heading_deg"] = mission_heading_deg();
+    if (mission_front_mm()) data["mission.front_mm"] = mission_front_mm();
+    else data["mission.front_mm"] = nullptr;
+    if (mission_left_mm()) data["mission.left_mm"] = mission_left_mm();
+    else data["mission.left_mm"] = nullptr;
+    if (mission_right_mm()) data["mission.right_mm"] = mission_right_mm();
+    else data["mission.right_mm"] = nullptr;
+    data["mission.detour_count"] = mission_detour_count();
     data["bluetooth.active"] = jsonActive && activeTransport == DebugTransport::Bluetooth;
     data["bluetooth.rx_bytes"] = (long)console_bluetooth_rx_bytes();
     data["bluetooth.rx_lines"] = (long)console_bluetooth_rx_lines();
@@ -711,6 +752,7 @@ static void handle_command(JsonDocument& doc) {
         magnet_control_off();
         servo_control_stop();
         navigation_stop("Emergency stop");
+        mission_stop("Emergency stop");
         debug_protocol_log("WARNING", "STOP: actuator outputs set to safe state");
         send_state();
 
@@ -724,6 +766,7 @@ static void handle_command(JsonDocument& doc) {
             magnet_control_off();
             servo_control_stop();
             navigation_stop("Debug mode disabled");
+            mission_stop("Debug mode disabled");
         }
         send_state();
 
@@ -749,6 +792,7 @@ static void handle_command(JsonDocument& doc) {
             return;
         }
         navigation_stop("Manual drive command");
+        mission_stop("Manual drive command");
         drive_control_set_percent(doc["left"] | 0, doc["right"] | 0);
 
     } else if (strcmp(command, "drum_set") == 0) {
@@ -776,12 +820,60 @@ static void handle_command(JsonDocument& doc) {
             send_error("navigation_set requires debug mode");
             return;
         }
+        if (enabled) mission_stop("8x8 test navigation took control");
         if (!navigation_set_enabled(enabled)) {
             send_error(navigation_get_stop_reason());
         } else {
             debug_protocol_log("INFO", enabled ? "Navigation started" : "Navigation stopped");
         }
 
+    } else if (strcmp(command, "mission_begin") == 0) {
+        const int count = doc["count"] | 0;
+        if (!debugMode || count < 1 || count > MISSION_MAX_WAYPOINTS ||
+            !mission_begin(static_cast<uint8_t>(count), doc["start_x_mm"] | -1.0f,
+                           doc["start_y_mm"] | -1.0f,
+                           doc["start_heading_deg"] | 0.0f,
+                           doc["robot_radius_mm"] | 215.0f,
+                           doc["margin_mm"] | 90.0f))
+            send_error("Mission begin rejected: check Debug Mode, start and route size");
+    } else if (strcmp(command, "mission_obstacle") == 0) {
+        const int index = doc["index"] | -1;
+        if (!debugMode || index < 0 || index >= MISSION_MAX_OBSTACLES ||
+            !mission_add_obstacle(static_cast<uint8_t>(index),
+                                  doc["x"] | -1.0f, doc["y"] | -1.0f,
+                                  doc["width"] | 0.0f, doc["depth"] | 0.0f,
+                                  doc["rotation"] | 0.0f,
+                                  doc["circular"] | false))
+            send_error("Mission obstacle rejected: sequence or geometry invalid");
+    } else if (strcmp(command, "mission_chunk") == 0) {
+        const int offset = doc["offset"] | -1;
+        JsonArray points = doc["points"].as<JsonArray>();
+        if (!debugMode || offset < 0 || points.isNull() || points.size() == 0 ||
+            points.size() % 3 != 0 || points.size() > 24 ||
+            offset + static_cast<int>(points.size()/3) > MISSION_MAX_WAYPOINTS) {
+            send_error("Mission waypoint chunk malformed");
+            return;
+        }
+        for (size_t i = 0; i < points.size(); i += 3) {
+            const int flags = points[i+2].as<int>();
+            if (flags < 0 || flags > 255 ||
+                !mission_add_waypoint(static_cast<uint8_t>(offset + i/3),
+                                      points[i].as<float>(), points[i+1].as<float>(),
+                                      static_cast<uint8_t>(flags))) {
+                send_error("Mission waypoint rejected: sequence or coordinates invalid");
+                return;
+            }
+        }
+    } else if (strcmp(command, "mission_commit") == 0) {
+        if (!debugMode || !mission_commit()) send_error("Mission commit rejected: incomplete or unsafe route/map");
+        else debug_protocol_log("INFO", "Robot-side route uploaded and validated; awaiting Start");
+    } else if (strcmp(command, "mission_start") == 0) {
+        if (!debugMode || !mission_start()) send_error("Mission start rejected: upload route, calibrate IMU and set 100% drive limit");
+        else debug_protocol_log("INFO", "Robot-side mission started");
+    } else if (strcmp(command, "mission_resume") == 0) {
+        if (!debugMode || !mission_resume()) send_error("Mission resume rejected: not paused at weight site");
+    } else if (strcmp(command, "mission_stop") == 0) {
+        mission_stop("Stopped by operator");
     } else if (strcmp(command, "encoders_reset") == 0) {
         encoders_reset();
         debug_protocol_log("INFO", "Encoder counts reset");

@@ -120,20 +120,28 @@ PORT_TYPE_LABELS = {
     "magnet": "Electromagnet driver",
 }
 
+# Logical telemetry channel, SX1509 IO pin, physical robot role. Keep this in
+# step with sensor_config.h when moving a cable on the expander.
+TOF_CHANNELS = (
+    (3, 8, "Front_Top_Right"),
+    (4, 5, "Front_Bottom_Right"),
+    (5, 6, "Front_Bottom_Left"),
+    (6, 7, "Front_Top_Left"),
+    (7, 9, "Top_Right"),
+    (8, 10, "Top_Left"),
+)
+
 
 def _build_ports() -> list[Port]:
     ports: list[Port] = []
 
     # Six VL53L1X ToFs on the add-on SX1509 at 0x71. Port IDs and IO mapping
     # mirror the current firmware; the former top L0X units are not installed.
-    tof_channels = ((3, 8, "vl53l1x"), (4, 5, "vl53l1x"),
-                    (5, 6, "vl53l1x"), (6, 7, "vl53l1x"),
-                    (7, 9, "vl53l1x"), (8, 10, "vl53l1x"))
-    for logical, io_pin, sensor_kind in tof_channels:
+    for logical, io_pin, _name in TOF_CHANNELS:
         ports.append(Port(
             f"xshut{logical}", f"ToF channel IO{io_pin} · SX1509 0x71", "xshut",
             signals=((f"tof.xshut{logical}", "Distance"),),
-            expects=sensor_kind, pins=("D18", "D19"), bus="wire",
+            expects="vl53l1x", pins=("D18", "D19"), bus="wire",
         ))
 
     i2c_devices = {
@@ -282,16 +290,15 @@ class Device:
 
 def default_devices() -> list[Device]:
     """The wiring sensor_config.h currently assumes, with plain names."""
-    channels = ((0, 0, "vl53l0x"), (1, 3, "vl53l0x"),
-                (3, 4, "vl53l1x"), (4, 5, "vl53l1x"),
-                (5, 6, "vl53l1x"), (6, 7, "vl53l1x"))
     devices = [
-        Device(f"ToF IO{io_pin}", sensor_kind, f"xshut{logical}")
-        for logical, io_pin, sensor_kind in channels
+        Device(name, "vl53l1x", f"xshut{logical}")
+        for logical, _io_pin, name in TOF_CHANNELS
     ]
     devices += [
         Device("CH9143 Bluetooth", "bluetooth", "serial1"),
         Device("8×8 ToF array", "tof_8x8", "wire1_0x33"),
+        Device("Ultrasonic_Right", "ultrasonic", "ultrasonic_30_31"),
+        Device("Ultrasonic_Left", "ultrasonic", "ultrasonic_32_33"),
         Device("Left drive ESC", "motor", "drive_left"),
         Device("Right drive ESC", "motor", "drive_right"),
         Device("Left drum", "drum", "drum_left"),

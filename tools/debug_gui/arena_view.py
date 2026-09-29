@@ -111,6 +111,13 @@ class ArenaModel:
         # Group 7's top/bottom depth-gap idea, mapped to Group 23's wiring.
         # Require three consistent frames before putting a candidate on-map.
         for top_key, bottom_key in (("xshut6", "xshut5"), ("xshut3", "xshut4")):
+            top_spec = next((s for s in self.sensor_specs if s["key"] == top_key
+                             and s.get("enabled", True)), None)
+            bottom_spec = next((s for s in self.sensor_specs if s["key"] == bottom_key
+                                and s.get("enabled", True)), None)
+            if top_spec is None or bottom_spec is None:
+                self.weight_votes[top_key] = 0
+                continue
             top = number(frame.get(f"tof.{top_key}"))
             bottom = number(frame.get(f"tof.{bottom_key}"))
             if top is None or bottom is None or not (50 <= bottom <= 2000) or not (50 <= top < 4000):
@@ -122,10 +129,7 @@ class ArenaModel:
             self.weight_votes[top_key] = min(3, self.weight_votes.get(top_key, 0) + 1)
             if self.weight_votes[top_key] < 3:
                 continue
-            spec = next((s for s in self.sensor_specs if s["key"] == bottom_key), None)
-            if spec is None:
-                continue
-            ox, oy, angle = self._origin_and_angle(spec)
+            ox, oy, angle = self._origin_and_angle(bottom_spec)
             point = (ox + bottom * math.cos(angle), oy + bottom * math.sin(angle))
             if all(math.hypot(point[0] - x, point[1] - y) > 150 for x, y in self.detected_weights):
                 self.detected_weights.append(point)
@@ -379,10 +383,11 @@ class ArenaView(QWidget):
         root = QHBoxLayout(self)
         left = QVBoxLayout()
         controls = QHBoxLayout()
-        self.run = QPushButton("START NAVIGATION")
-        self.stop = QPushButton("STOP NAVIGATION")
+        self.run = QPushButton("START 8×8 AVOIDANCE TEST")
+        self.stop = QPushButton("STOP AVOIDANCE TEST")
         self.run.setObjectName("primaryButton")
         self.stop.setObjectName("dangerButton")
+        self.run.setToolTip("Standalone firmware 8×8/IMU avoidance test. To follow a drawn route using the full desktop sensor map, use FOLLOW ROUTE in Mission Planner.")
         self.run.clicked.connect(lambda: self.command_requested.emit("navigation_set", {"enabled": True}))
         self.stop.clicked.connect(lambda: self.command_requested.emit("navigation_set", {"enabled": False}))
         reset = QPushButton("Reset map origin")
@@ -407,7 +412,7 @@ class ArenaView(QWidget):
         editor.addWidget(undo_button)
         editor.addStretch()
         left.addLayout(editor)
-        hint = QLabel("Click to place marks; walls need two clicks. Sensor markers: gold = VL53, purple = 8×8 ToF, cyan = ultrasonic. Rings and z labels show height above ground. Select a sensor below before dragging co-located markers. Cyan route is preview only.")
+        hint = QLabel("Click to place marks; walls need two clicks. Sensor markers: gold = VL53, purple = 8×8 ToF, cyan = ultrasonic. Rings and z labels show height above ground. Select a sensor below before dragging co-located markers. Cyan route is preview only; use Mission Planner to follow a drawn route.")
         hint.setWordWrap(True)
         left.addWidget(hint)
         left.addWidget(self.canvas, 1)
@@ -605,23 +610,23 @@ class ArenaView(QWidget):
     def _build_specs(self):
         self._migrate_range_sensor_defaults()
         specs = []
+        # Stable channel IDs carry the physical role; renaming a device in
+        # Wiring must not change its aim or side of the robot.
+        point_defaults = {
+            "xshut3": (90, 140, -45),   # front top right, IO8
+            "xshut4": (90, 140, -45),   # front bottom right, IO5
+            "xshut5": (-90, 140, 45),   # front bottom left, IO6
+            "xshut6": (-90, 140, 45),   # front top left, IO7
+            "xshut7": (90, 140, 0),     # straight top right, IO9
+            "xshut8": (-90, 140, 0),    # straight top left, IO10
+        }
         point_devices = [d for d in self.hardware_map.devices
                          if d.port.startswith("xshut") and d.kind in ("vl53l0x", "vl53l1x")]
         for device in point_devices:
             signal = "tof." + device.port
             lower = device.name.lower()
-            x_default = -90 if "left" in lower else (90 if "right" in lower else 0)
-            y_default = 140 if "front" in lower or "top" in lower else 0
-            # The four front side sensors are aimed inward at 45 degrees:
-            # left-side beams rotate toward the robot's right, right-side
-            # beams toward its left. Their persisted GUI calibration remains
-            # authoritative when the operator has already set an angle.
-            if device.port in ("xshut6", "xshut5"):
-                angle_default = 45
-            elif device.port in ("xshut3", "xshut4"):
-                angle_default = -45
-            else:
-                angle_default = 0
+            x_default, y_default, angle_default = point_defaults.get(
+                device.port, (0, 0, 0))
             key = device.port
             specs.append(self._placement_spec(key, device.name, signal, "point",
                                               x_default, y_default, angle_default,

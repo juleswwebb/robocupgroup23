@@ -28,6 +28,7 @@
 #include "Inductive.h"
 #include "Encoders.h"
 #include "Navigation.h"
+#include "MissionNavigation.h"
 #include "ServoControl.h"
 #include "DriveControl.h"
 #include "DrumControl.h"
@@ -180,6 +181,7 @@ Task tUpdate_drum_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE
 Task tUpdate_servo_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &servo_control_update);
 Task tUpdate_magnet_control(DRIVE_CONTROL_UPDATE_PERIOD, DRIVE_CONTROL_NUM_EXECUTE, &magnet_control_update);
 Task tUpdate_navigation(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &navigation_update);
+Task tUpdate_mission(NAVIGATION_UPDATE_PERIOD, NAVIGATION_NUM_EXECUTE, &mission_update);
 
 Scheduler taskManager;
 
@@ -348,6 +350,7 @@ void setup() {
   magnet_control_init();   // D26 magnet driver output, safely OFF at boot
   servo_control_init();    // D20 servo/pulse output, neutral at boot
   navigation_init();       // autonomous navigation remains disabled at boot
+  mission_init();          // uploaded missions are invalid and stopped at boot
   console_set_command_handler(&handle_console_command);
   console_set_json_handler(&debug_protocol_handle_json);
 #if BLUETOOTH_ENABLED
@@ -399,6 +402,7 @@ void task_init() {
   taskManager.addTask(tUpdate_console);
   taskManager.addTask(tUpdate_debug_protocol);
   taskManager.addTask(tUpdate_navigation);
+  taskManager.addTask(tUpdate_mission);
   //
   // The stub modules (ultrasonic/infrared/colour/motors/weights/base) don't
   // have real logic yet - just a Serial.println placeholder each - so
