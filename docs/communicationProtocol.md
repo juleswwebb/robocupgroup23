@@ -3060,15 +3060,15 @@ That is what makes this debug system useful as a long-term robotics development 
 
 ## Current D20 servo controls
 
-`servo_set` accepts `pulse_us` (1000–2000) for a continuous-rotation / ESC
-pulse test on D20. `1500 us` is neutral, `1000 us` reverse, and `2000 us`
-forward. The GUI refreshes the pulse only while a direction button is held;
-firmware returns it to neutral after 300 ms without a command, on STOP, or on
-Debug Mode exit.
+`servo_set` accepts `pulse_us` (1000–2000) for a raw pulse test on D20. The
+connected Hextronik HX12K is a positional servo, so these are position pulses,
+not forward/reverse speed commands. The GUI refreshes the pulse only while a
+button is held; firmware returns it to 1500 us after 300 ms without a command,
+on STOP, or on Debug Mode exit. This raw test is diagnostic; use angle mode for
+normal operation.
 
 `servo_angle_set` accepts `angle` (0–180) and calls `Servo.write(degrees)` on
-D20. A positional servo holds the requested target; STOP/debug exit do not
-change that target. Use this only with a positional servo. A continuous-
-rotation servo interprets those pulses as speed, not angle, so it cannot
-provide genuine angle positioning without feedback. D20 aliases A6; IR sensor
-registration is disabled while D20 is assigned to servo control.
+D20. The HX12K holds the requested target; STOP/debug exit do not change that
+target. Operator-calibrated positions are 125° center, 100° for a real weight,
+and 150° for a fake weight. D20 aliases A6; IR sensor registration is disabled
+while D20 is assigned to servo control.

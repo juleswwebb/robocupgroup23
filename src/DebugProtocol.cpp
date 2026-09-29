@@ -187,6 +187,24 @@ static void send_telemetry_definitions() {
         send_telemetry_definition(name, sensor->getName(), distance_group(name), "mm");
     }
 
+    send_telemetry_definition("tof.xshut_expander_ok", "XSHUT expander found",
+                              "ToF diagnostics", "bool", false);
+    for (uint8_t i = 0; i < distance_sensors_point_tof_count(); i++) {
+        PointTofDiagnostic diagnostic;
+        if (!distance_sensors_get_point_tof_diagnostic(i, &diagnostic)) continue;
+        char prefix[40];
+        char signal[64];
+        dotted_name(diagnostic.name, prefix, sizeof(prefix));
+        snprintf(signal, sizeof(signal), "%s.init_ok", prefix);
+        send_telemetry_definition(signal, "VL53 initialized", "ToF diagnostics", "bool", false);
+        snprintf(signal, sizeof(signal), "%s.range_status", prefix);
+        send_telemetry_definition(signal, "VL53 range status", "ToF diagnostics", "code", false);
+        snprintf(signal, sizeof(signal), "%s.i2c_status", prefix);
+        send_telemetry_definition(signal, "VL53 I2C status", "ToF diagnostics", "code", false);
+        snprintf(signal, sizeof(signal), "%s.model_id", prefix);
+        send_telemetry_definition(signal, "VL53 model ID", "ToF diagnostics", "hex", false);
+    }
+
     send_telemetry_definition("tof.array_min", "8x8 nearest valid zone", "8x8 TOF", "mm");
     send_telemetry_definition("tof.array_valid_zones", "8x8 valid zones", "8x8 TOF", "zones", false);
     send_telemetry_definition("tof.array_frame_ok", "8x8 frame read OK", "8x8 TOF", "", false);
@@ -374,7 +392,7 @@ static void send_definitions() {
         doc["type"] = "command_definition";
         doc["name"] = "servo_set";
         doc["label"] = "Servo pulse test · D20";
-        doc["description"] = "Continuous-rotation pulse test: 1000 us reverse, 1500 us stop, 2000 us forward. Requires Debug Mode; returns to neutral after 300 ms without refresh.";
+        doc["description"] = "Raw pulse diagnostic for the positional HX12K on D20. These values command positions, not motor speed. Prefer servo_angle_set; returns to 1500 us after 300 ms without refresh.";
         JsonArray args = doc["args"].to<JsonArray>();
         JsonObject pulse = args.add<JsonObject>();
         pulse["name"] = "pulse_us"; pulse["label"] = "Pulse width (us)";
@@ -388,7 +406,7 @@ static void send_definitions() {
         doc["type"] = "command_definition";
         doc["name"] = "servo_angle_set";
         doc["label"] = "Set servo angle · D20";
-        doc["description"] = "Sets a positional servo target from 0 to 180 degrees and holds that position. Only use this with a positional servo; a continuous-rotation servo interprets it as speed. Requires Debug Mode.";
+        doc["description"] = "Sets and holds the positional HX12K target from 0 to 180 degrees. Calibrated references: center 125, real weight 100, fake weight 150. Requires Debug Mode.";
         JsonObject angle = doc["args"].to<JsonArray>().add<JsonObject>();
         angle["name"] = "angle"; angle["label"] = "Target angle (degrees)";
         angle["type"] = "int"; angle["min"] = 0; angle["max"] = 180;
@@ -522,6 +540,31 @@ void debug_protocol_send_telemetry() {
         dotted_name(sensor->getName(), name, sizeof(name));
         if (sensor->isValid()) data[name] = sensor->getDistanceMM();
         else data[name] = nullptr;
+    }
+
+    // These bring-up/status fields change infrequently; send them once per
+    // second rather than bloating every large 8x8 telemetry packet.
+    static unsigned long lastPointTofDiagnosticsMs = 0;
+    if (now - lastPointTofDiagnosticsMs >= 1000) {
+        lastPointTofDiagnosticsMs = now;
+        data["tof.xshut_expander_ok"] = distance_sensors_xshut_expander_ready();
+        for (uint8_t i = 0; i < distance_sensors_point_tof_count(); i++) {
+            PointTofDiagnostic diagnostic;
+            if (!distance_sensors_get_point_tof_diagnostic(i, &diagnostic)) continue;
+            char prefix[40];
+            char signal[64];
+            dotted_name(diagnostic.name, prefix, sizeof(prefix));
+            snprintf(signal, sizeof(signal), "%s.init_ok", prefix);
+            data[signal] = diagnostic.initialized;
+            snprintf(signal, sizeof(signal), "%s.range_status", prefix);
+            data[signal] = diagnostic.rangeStatus;
+            snprintf(signal, sizeof(signal), "%s.i2c_status", prefix);
+            data[signal] = diagnostic.i2cStatus;
+            snprintf(signal, sizeof(signal), "%s.model_id", prefix);
+            char modelId[8];
+            snprintf(modelId, sizeof(modelId), "0x%04X", diagnostic.modelId);
+            data[signal] = modelId;
+        }
     }
 
     uint16_t grid[64];

@@ -30,8 +30,14 @@ public:
     }
     const char* getName() const override { return name_; }
     bool isInitialized() const { return initialized_; }
+    bool hasSample() const { return hasSample_; }
+    bool isNoReturn() const { return noReturn_; }
     uint8_t getRangeStatus() const { return lastStatus_; }
     uint8_t getI2CStatus() const { return sensor_.last_status; }
+    uint8_t getInitAttempts() const { return initAttempts_; }
+    uint8_t getXshutPin() const { return xshutPin_; }
+    uint16_t getModelId() const { return modelId_; }
+    uint32_t getLastSampleAtMs() const { return lastSampleAt_; }
 
 private:
     const char* name_;
@@ -47,6 +53,8 @@ private:
     bool hasSample_ = false;
     bool noReturn_ = false;
     bool initialized_ = false;
+    uint8_t initAttempts_ = 0;
+    uint16_t modelId_ = 0;
 };
 
 #endif /* VL53L0X_SENSOR_H_ */

@@ -7,16 +7,6 @@
       "port": "serial1"
     },
     {
-      "name": "Top_Left",
-      "kind": "vl53l0x",
-      "port": "xshut0"
-    },
-    {
-      "name": "Top_Right",
-      "kind": "vl53l0x",
-      "port": "xshut1"
-    },
-    {
       "name": "Front_Top_Right",
       "kind": "vl53l1x",
       "port": "xshut3"
@@ -35,6 +25,16 @@
       "name": "Front_Top_Left",
       "kind": "vl53l1x",
       "port": "xshut6"
+    },
+    {
+      "name": "ToF IO9 (location TBD)",
+      "kind": "vl53l1x",
+      "port": "xshut7"
+    },
+    {
+      "name": "ToF IO10 (location TBD)",
+      "kind": "vl53l1x",
+      "port": "xshut8"
     },
     {
       "name": "8×8 ToF array",

@@ -17,6 +17,9 @@ class Value:
     def value(self):
         return self._value
 
+    def setValue(self, value):
+        self._value = value
+
 
 class DriveControlTests(unittest.TestCase):
     def test_servo_pulse_test_stops_to_neutral_on_release(self):
@@ -58,6 +61,18 @@ class DriveControlTests(unittest.TestCase):
             RobotDebugGUI._send_servo_angle(gui)
         self.assertEqual(recorded, [("servo_angle_set", {"angle": 135})])
         self.assertEqual(sent, [(('servo_angle_set',), {"angle": 135})])
+
+    def test_servo_center_uses_operator_calibrated_125_degrees(self):
+        sent_angles = []
+        gui = SimpleNamespace(
+            servo_angle_spin=Value(90),
+            servo_angle_slider=Value(90),
+            _send_servo_angle=lambda: sent_angles.append(gui.servo_angle_spin.value()),
+        )
+        RobotDebugGUI._center_servo(gui)
+        self.assertEqual(gui.servo_angle_spin.value(), 125)
+        self.assertEqual(gui.servo_angle_slider.value(), 125)
+        self.assertEqual(sent_angles, [125])
 
     def test_servo_test_refuses_to_start_without_fresh_telemetry(self):
         sent = []

@@ -344,8 +344,8 @@ class RobotDebugGUI(QMainWindow):
         self.servo_test_pulse_us = 1500
         self.servo_reported_pin = 20
         self.servo_reported_pulse_us = 1500
-        self.servo_angle_target_deg = 90
-        self.servo_reported_angle_deg = 90
+        self.servo_angle_target_deg = 125
+        self.servo_reported_angle_deg = 125
         self.servo_position_mode = False
         self.magnet_is_on = False
         self.robot_debug_mode = False
@@ -1175,10 +1175,11 @@ class RobotDebugGUI(QMainWindow):
         servo_group = QGroupBox("Servo controls · D20")
         servo_layout = QVBoxLayout(servo_group)
         servo_hint = QLabel(
-            "Position mode sets and holds a target angle. Use it only with a positional "
-            "servo. Your earlier 1000/2000 µs example is continuous-rotation behavior; "
-            "on that type, angle commands act like speed, not a physical angle. D20 is "
-            "also A6, so IR sampling there is disabled. Controls require Debug Mode."
+            "Hextronik HX12K positional servo on D20. Calibrated positions: center 125°, "
+            "real weight 100°, fake weight 150°. Position mode moves to and holds the "
+            "selected target. The raw pulse test is not a speed control for this servo; "
+            "1000/2000 µs may drive it toward its travel limits. D20 is also A6, so IR "
+            "sampling there is disabled. Controls require Debug Mode."
         )
         servo_hint.setWordWrap(True)
         servo_hint.setObjectName("hint")
@@ -1189,11 +1190,11 @@ class RobotDebugGUI(QMainWindow):
         angle_row = QHBoxLayout()
         self.servo_angle_slider = QSlider(Qt.Orientation.Horizontal)
         self.servo_angle_slider.setRange(0, 180)
-        self.servo_angle_slider.setValue(90)
+        self.servo_angle_slider.setValue(125)
         self.servo_angle_slider.setToolTip("Choose a positional-servo target from 0° to 180°")
         self.servo_angle_spin = QSpinBox()
         self.servo_angle_spin.setRange(0, 180)
-        self.servo_angle_spin.setValue(90)
+        self.servo_angle_spin.setValue(125)
         self.servo_angle_spin.setSuffix("°")
         self.servo_angle_slider.valueChanged.connect(self.servo_angle_spin.setValue)
         self.servo_angle_spin.valueChanged.connect(self.servo_angle_slider.setValue)
@@ -1205,22 +1206,22 @@ class RobotDebugGUI(QMainWindow):
         self.servo_set_angle_button.setObjectName("primaryButton")
         self.servo_set_angle_button.setEnabled(False)
         self.servo_set_angle_button.clicked.connect(self._send_servo_angle)
-        self.servo_center_button = QPushButton("CENTER · 90°")
+        self.servo_center_button = QPushButton("CENTER · 125°")
         self.servo_center_button.setEnabled(False)
         self.servo_center_button.clicked.connect(self._center_servo)
         angle_buttons.addWidget(self.servo_set_angle_button)
         angle_buttons.addWidget(self.servo_center_button)
         servo_layout.addLayout(angle_buttons)
 
-        pulse_title = QLabel("CONTINUOUS-ROTATION PULSE TEST")
+        pulse_title = QLabel("RAW PULSE TEST · HX12K POSITIONAL SERVO")
         pulse_title.setObjectName("sectionTitle")
         servo_layout.addWidget(pulse_title)
         servo_button_row = QHBoxLayout()
-        self.servo_reverse_button = QPushButton("HOLD REVERSE · 1000 µs")
+        self.servo_reverse_button = QPushButton("HOLD · 1000 µs")
         self.servo_reverse_button.setEnabled(False)
         self.servo_reverse_button.pressed.connect(lambda: self._start_servo_test(1000))
         self.servo_reverse_button.released.connect(self._stop_servo_test)
-        self.servo_forward_button = QPushButton("HOLD FORWARD · 2000 µs")
+        self.servo_forward_button = QPushButton("HOLD · 2000 µs")
         self.servo_forward_button.setEnabled(False)
         self.servo_forward_button.setObjectName("primaryButton")
         self.servo_forward_button.pressed.connect(lambda: self._start_servo_test(2000))
@@ -1409,8 +1410,8 @@ class RobotDebugGUI(QMainWindow):
         theme.set_pill_state(self.servo_status_label, "busy")
 
     def _center_servo(self):
-        self.servo_angle_spin.setValue(90)
-        self.servo_angle_slider.setValue(90)
+        self.servo_angle_spin.setValue(125)
+        self.servo_angle_slider.setValue(125)
         self._send_servo_angle()
 
     def _start_servo_test(self, pulse_us: int):
@@ -1438,10 +1439,8 @@ class RobotDebugGUI(QMainWindow):
             theme.set_pill_state(self.servo_status_label, "bad")
             return
         self._send_servo_test_pulse(self.servo_test_pulse_us)
-        direction = "REVERSE" if self.servo_test_pulse_us < 1500 else "FORWARD"
         self.servo_status_label.setText(
-            f"RUNNING · D20 · {direction} · "
-            f"{self.servo_test_pulse_us} µs"
+            f"RAW PULSE · D20 · {self.servo_test_pulse_us} µs"
         )
         theme.set_pill_state(self.servo_status_label, "busy")
 

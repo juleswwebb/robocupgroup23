@@ -46,7 +46,7 @@ Telemetry signals (sent at 10 Hz by default in one grouped packet):
 
 | Prefix | Signals |
 |---|---|
-| `tof.*` | `xshut0`–`xshut6`, `8x8`, `serial`, `array_min`, `array_valid_zones`, and `array.r0c0`–`array.r7c7` (mm) |
+| `tof.*` | `xshut3`–`xshut8`, `8x8`, `serial`, `array_min`, `array_valid_zones`, and `array.r0c0`–`array.r7c7` (mm) |
 | `ir.*` | `0`–`3` (mm) |
 | `ultrasonic.*` | `0`, `1` (mm) |
 | `colour.*` | `r`, `g`, `b`, `c` |

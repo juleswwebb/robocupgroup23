@@ -15,35 +15,58 @@ void VL53L1XSensor::preReset() {
 }
 
 bool VL53L1XSensor::begin() {
-    // Release this sensor from reset. Wait for it to boot before talking to it.
-    expander_->digitalWrite(xshutPin_, HIGH);
-    delay(100);
+    static const uint8_t maxAttempts = 2;
+    initialized_ = false;
+    hasSample_ = false;
+    noReturn_ = false;
+    lastStatus_ = 255;
+    modelId_ = 0;
 
-    sensor_.setTimeout(500);
-    if (!sensor_.init()) {
-        Serial.print("VL53L1X '");
-        Serial.print(name_);
-        Serial.println("' failed to initialise (check wiring/power/bus)");
-        // Keep a failed device isolated at 0x29 so it cannot collide with
-        // the next sensor in the sequential address-assignment chain.
+    for (initAttempts_ = 1; initAttempts_ <= maxAttempts; initAttempts_++) {
+        // Power-cycle this sensor between attempts while all previously
+        // initialized devices remain at their assigned unique addresses.
+        expander_->pinMode(xshutPin_, OUTPUT);
         expander_->digitalWrite(xshutPin_, LOW);
-        initialized_ = false;
-        return false;
+        delay(20);
+        expander_->digitalWrite(xshutPin_, HIGH);
+        delay(100);
+
+        sensor_.setTimeout(500);
+        if (!sensor_.init()) {
+            modelId_ = sensor_.readReg16Bit(VL53L1X::IDENTIFICATION__MODEL_ID);
+            const uint8_t i2cStatus = sensor_.last_status;
+            Serial.print("VL53L1X '"); Serial.print(name_);
+            Serial.print("' init attempt "); Serial.print(initAttempts_);
+            Serial.print("/"); Serial.print(maxAttempts);
+            Serial.print(" failed; model=0x"); Serial.print(modelId_, HEX);
+            Serial.print(" i2c="); Serial.println(i2cStatus);
+            expander_->digitalWrite(xshutPin_, LOW);
+            delay(20);
+            continue;
+        }
+
+        modelId_ = 0xEACC;
+
+        // Move off the shared power-on default (0x29) so the next sensor in
+        // the chain can be brought up without an address collision.
+        sensor_.setAddress(address_);
+        sensor_.setDistanceMode(mode_);
+        // Match Group 7's proven L1 configuration for these directional sensors.
+        sensor_.setROISize(8, 8);
+        sensor_.setMeasurementTimingBudget(timingBudgetUs_);
+        // Continuous, non-blocking acquisition: update() only consumes ready
+        // samples while the sensor runs at the configured 50 ms cadence.
+        sensor_.startContinuous(50);
+        sensor_.setTimeout(5);
+        initialized_ = true;
+        return true;
     }
 
-    // Move off the shared power-on default (0x29) so the next sensor in the
-    // chain can be brought up without an address collision.
-    sensor_.setAddress(address_);
-    sensor_.setDistanceMode(mode_);
-    // Match Group 7's proven L1 configuration for these directional sensors.
-    sensor_.setROISize(8, 8);
-    sensor_.setMeasurementTimingBudget(timingBudgetUs_);
-    // Continuous, non-blocking acquisition: update() only consumes ready
-    // samples while the sensor runs at the configured 50 ms cadence.
-    sensor_.startContinuous(50);
-    sensor_.setTimeout(5);
-    initialized_ = true;
-    return true;
+    initAttempts_ = maxAttempts;
+    // Keep a failed device isolated at 0x29 so it cannot collide with
+    // the next sensor in the sequential address-assignment chain.
+    expander_->digitalWrite(xshutPin_, LOW);
+    return false;
 }
 
 void VL53L1XSensor::update() {

@@ -1,4 +1,4 @@
-// Servo / continuous-rotation test output on Teensy D20.
+// Hextronik HX12K positional servo on Teensy D20; raw pulse mode is diagnostic.
 #ifndef SERVO_CONTROL_H_
 #define SERVO_CONTROL_H_
 

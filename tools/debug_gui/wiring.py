@@ -124,11 +124,11 @@ PORT_TYPE_LABELS = {
 def _build_ports() -> list[Port]:
     ports: list[Port] = []
 
-    # Six ToFs on the add-on SX1509 at 0x71; the top pair are L0X and the
-    # remaining four are L1X. Port IDs and IO mapping mirror the firmware.
-    tof_channels = ((0, 0, "vl53l0x"), (1, 3, "vl53l0x"),
-                    (3, 4, "vl53l1x"), (4, 5, "vl53l1x"),
-                    (5, 6, "vl53l1x"), (6, 7, "vl53l1x"))
+    # Six VL53L1X ToFs on the add-on SX1509 at 0x71. Port IDs and IO mapping
+    # mirror the current firmware; the former top L0X units are not installed.
+    tof_channels = ((3, 8, "vl53l1x"), (4, 5, "vl53l1x"),
+                    (5, 6, "vl53l1x"), (6, 7, "vl53l1x"),
+                    (7, 9, "vl53l1x"), (8, 10, "vl53l1x"))
     for logical, io_pin, sensor_kind in tof_channels:
         ports.append(Port(
             f"xshut{logical}", f"ToF channel IO{io_pin} · SX1509 0x71", "xshut",

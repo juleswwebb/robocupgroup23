@@ -12,8 +12,23 @@
 
 #include "sensors/DistanceSensor.h"
 
+struct PointTofDiagnostic {
+    const char* name;
+    const char* model;
+    uint8_t xshutIo;
+    bool initialized;
+    bool hasSample;
+    bool valid;
+    bool noReturn;
+    uint8_t rangeStatus;
+    uint8_t i2cStatus;
+    uint8_t initAttempts;
+    uint16_t modelId;
+    uint32_t sampleAgeMs;
+};
+
 // Bring up I2C, then every registered sensor (XSHUT sequencing + address
-// assignment for the VL53L0X/L1X sensors). Call once from setup().
+// assignment for the configured VL53 sensors). Call once from setup().
 void distance_sensors_init();
 
 // Poll every sensor once. Call periodically from a scheduled task.
@@ -44,5 +59,12 @@ unsigned short distance_sensors_8x8_min_mm();
 // Copy the latest complete 8x8 frame into buf (64 row-major uint16 values).
 // Returns false until a frame has been received successfully.
 bool distance_sensors_get_8x8_grid(unsigned short* buf);
+
+// Startup/health diagnostics for the six active point VL53 channels, in registration
+// order. This keeps callers from guessing/casting L0X channels as L1X.
+unsigned char distance_sensors_point_tof_count();
+bool distance_sensors_get_point_tof_diagnostic(unsigned char index,
+                                                PointTofDiagnostic* diagnostic);
+bool distance_sensors_xshut_expander_ready();
 
 #endif /* DISTANCE_SENSORS_H_ */

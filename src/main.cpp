@@ -192,8 +192,8 @@ Scheduler taskManager;
 // Commands:
 //   mode sensors          - show all sensor debug prints (default)
 //   mode test             - hide sensor prints for actuator tests
-//   servo us <1000-2000>  - pulse/speed test on D20 (1500 = neutral)
-//   servo angle <0-180>   - positional-servo target on D20
+//   servo us <1000-2000>  - raw pulse diagnostic on D20
+//   servo angle <0-180>   - HX12K position target on D20
 //   servo stop            - neutralise pulse-test mode; position mode holds
 //   drive <left> <right>  - command both main drive motors (-100..100)
 //   drive stop            - neutral both main drive motors
@@ -245,9 +245,9 @@ static void print_console_help() {
   out.println("  mode test               - hide sensor prints for actuator testing");
   out.println("  drive <left> <right>    - main drive motors, -100 to 100");
   out.println("  drive stop              - neutral both main drive motors");
-  out.println("  servo us <1000-2000>    - pulse/speed test on D20 (1500 = neutral)");
-  out.println("  servo angle <0-180>     - positional-servo target on D20");
-  out.println("  servo stop              - neutralise pulse-test mode");
+  out.println("  servo us <1000-2000>    - raw pulse diagnostic on D20");
+  out.println("  servo angle <0-180>     - HX12K position target on D20");
+  out.println("  servo stop              - return raw pulse to 1500 us");
   out.println("  help                    - show this list");
 }
 

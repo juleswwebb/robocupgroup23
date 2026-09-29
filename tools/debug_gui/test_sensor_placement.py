@@ -3,7 +3,7 @@
 import unittest
 
 from arena_view import ArenaModel, ArenaView
-from wiring import HardwareMap
+from wiring import HardwareMap, PORTS_BY_ID
 
 
 class FakeSettings:
@@ -44,8 +44,13 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual(specs["xshut5"]["angle"], 45)
         self.assertEqual(specs["xshut3"]["angle"], -45)
         self.assertEqual(specs["xshut4"]["angle"], -45)
-        self.assertEqual(specs["xshut0"]["angle"], 0)
-        self.assertEqual(specs["xshut1"]["angle"], 0)
+        self.assertNotIn("xshut0", specs)  # removed top-left L0X
+        self.assertNotIn("xshut1", specs)  # removed top-right L0X
+        self.assertFalse(specs["xshut7"]["enabled"])
+        self.assertFalse(specs["xshut8"]["enabled"])
+        self.assertIn("IO8", PORTS_BY_ID["xshut3"].label)
+        self.assertIn("IO9", PORTS_BY_ID["xshut7"].label)
+        self.assertIn("IO10", PORTS_BY_ID["xshut8"].label)
         self.assertEqual(specs["ultrasonic0"]["name"], "Ultrasonic_Right")
         self.assertEqual(specs["ultrasonic1"]["name"], "Ultrasonic_Left")
         self.assertEqual(specs["ultrasonic0"]["kind"], "ultrasonic")
@@ -88,11 +93,13 @@ class PlacementTests(unittest.TestCase):
         self.assertIsNone(warning)
         ArenaView._build_specs(holder)
         specs = {spec["key"]: spec for spec in holder.model.sensor_specs}
-        self.assertEqual(specs["xshut0"]["angle"], 0)
+        self.assertNotIn("xshut0", specs)
         self.assertEqual(specs["ultrasonic0"]["x"], 110)
         self.assertEqual(specs["ultrasonic0"]["y"], 0)
         self.assertEqual(specs["ultrasonic0"]["angle"], 90)
-        self.assertEqual(specs["xshut1"]["angle"], 12)
+        self.assertNotIn("xshut1", specs)
+        self.assertEqual(holder.settings.values["arena/sensors/xshut0/angle"], 0)
+        self.assertEqual(holder.settings.values["arena/sensors/xshut1/angle"], 12)
         self.assertEqual(holder.settings.values["arena/range_sensor_defaults_version"], 2)
 
 

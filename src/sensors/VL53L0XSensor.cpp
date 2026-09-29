@@ -14,28 +14,54 @@ void VL53L0XSensor::preReset() {
 }
 
 bool VL53L0XSensor::begin() {
-    // Release this sensor from reset. Wait for it to boot before talking to it.
-    expander_->digitalWrite(xshutPin_, HIGH);
-    delay(100);
+    static const uint8_t maxAttempts = 2;
+    initialized_ = false;
+    hasSample_ = false;
+    lastTimeout_ = true;
+    noReturn_ = false;
+    lastStatus_ = 255;
+    modelId_ = 0;
 
-    sensor_.setTimeout(500);
-    if (!sensor_.init()) {
-        Serial.print("VL53L0X '");
-        Serial.print(name_);
-        Serial.println("' failed to initialise (check wiring/power/bus)");
+    for (initAttempts_ = 1; initAttempts_ <= maxAttempts; initAttempts_++) {
+        // Power-cycle this sensor between attempts while all previously
+        // initialized devices remain at their assigned unique addresses.
+        expander_->pinMode(xshutPin_, OUTPUT);
         expander_->digitalWrite(xshutPin_, LOW);
-        initialized_ = false;
-        return false;
+        delay(20);
+        expander_->digitalWrite(xshutPin_, HIGH);
+        delay(100);
+
+        sensor_.setTimeout(500);
+        if (!sensor_.init()) {
+            // Capture what answered at the default address: a mismatched
+            // module type has I2C status 0 but a non-matching model ID.
+            modelId_ = sensor_.readReg(VL53L0X::IDENTIFICATION_MODEL_ID);
+            const uint8_t i2cStatus = sensor_.last_status;
+            Serial.print("VL53L0X '"); Serial.print(name_);
+            Serial.print("' init attempt "); Serial.print(initAttempts_);
+            Serial.print("/"); Serial.print(maxAttempts);
+            Serial.print(" failed; model=0x"); Serial.print(modelId_, HEX);
+            Serial.print(" i2c="); Serial.println(i2cStatus);
+            expander_->digitalWrite(xshutPin_, LOW);
+            delay(20);
+            continue;
+        }
+
+        modelId_ = 0x00EE;
+
+        // Move off the shared power-on default (0x29) so the next sensor in
+        // the chain can be brought up without an address collision.
+        sensor_.setAddress(address_);
+        sensor_.setMeasurementTimingBudget(timingBudgetUs_);
+        sensor_.startContinuous();
+        sensor_.setTimeout(5);
+        initialized_ = true;
+        return true;
     }
 
-    // Move off the shared power-on default (0x29) so the next sensor in the
-    // chain can be brought up without an address collision.
-    sensor_.setAddress(address_);
-    sensor_.setMeasurementTimingBudget(timingBudgetUs_);
-    sensor_.startContinuous();
-    sensor_.setTimeout(5);
-    initialized_ = true;
-    return true;
+    initAttempts_ = maxAttempts;
+    expander_->digitalWrite(xshutPin_, LOW);
+    return false;
 }
 
 void VL53L0XSensor::update() {

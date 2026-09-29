@@ -67,30 +67,29 @@
 #define SERVO_TEST_COMMAND_TIMEOUT_MS 300
 #define IR_DISTANCE_SENSORS_ENABLED 0
 
-// The six point VL53 sensors and their SX1509 are on I2C bus 0
+// The six point VL53L1X sensors and their SX1509 are on I2C bus 0
 // (Wire, pins 18/19).
 #define VL53_I2C_BUS Wire
 // The 8x8 array is on I2C bus 1 (Wire1, pins 16/17) - confirmed by scanning.
 #define MATRIX_LIDAR_I2C_BUS Wire1
 
-// Six point ToFs use the add-on SX1509 at 0x71 on IO0, IO3-IO7.
+// Six point VL53L1X ToFs use the add-on SX1509 at 0x71 on IO5-IO10.
 // These are expander pins, not Teensy GPIO pins.
 #define SX1509_I2C_ADDRESS 0x71
 #define SX1509_I2C_BUS Wire
 
-#define TOF_XSHUT0_IO 0
-#define TOF_XSHUT1_IO 3
-#define TOF_XSHUT3_IO 4
+#define TOF_XSHUT3_IO 8
 #define TOF_XSHUT4_IO 5
 #define TOF_XSHUT5_IO 6
 #define TOF_XSHUT6_IO 7
+#define TOF_XSHUT7_IO 9
+#define TOF_XSHUT8_IO 10
 
 // I2C addresses assigned once each sensor is brought out of reset (7-bit).
 // 0x29 is every VL53L0X/L1X's shared power-on default and must never be
 // reused once other sensors have been addressed - that's the whole reason
 // for the one-at-a-time XSHUT bring-up sequence.
-#define VL53L1X_ADDR_BASE 0x35   // -> 0x35..0x38 for four VL53L1X
-#define VL53L0X_ADDR_BASE 0x30   // -> 0x30..0x31 for top-left/top-right VL53L0X
+#define VL53L1X_ADDR_BASE 0x35   // -> 0x35..0x3A for six VL53L1X
 
 #define MATRIX_LIDAR_ADDR 0x33   // fixed by the DFRobot module itself
 

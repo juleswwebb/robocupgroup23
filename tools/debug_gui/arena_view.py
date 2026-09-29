@@ -616,20 +616,17 @@ class ArenaView(QWidget):
             # left-side beams rotate toward the robot's right, right-side
             # beams toward its left. Their persisted GUI calibration remains
             # authoritative when the operator has already set an angle.
-            if device.port in ("xshut0", "xshut1"):
-                # The top pair point straight forward; they are the frontal
-                # wall/obstacle range sensors, not the inward-angled pair.
-                angle_default = 0
-            elif device.port in ("xshut6", "xshut5"):
+            if device.port in ("xshut6", "xshut5"):
                 angle_default = 45
             elif device.port in ("xshut3", "xshut4"):
                 angle_default = -45
             else:
-                angle_default = -45 if device.port == "xshut0" else (45 if device.port == "xshut1" else 0)
+                angle_default = 0
             key = device.port
             specs.append(self._placement_spec(key, device.name, signal, "point",
                                               x_default, y_default, angle_default,
-                                              "not in use" not in lower))
+                                              "not in use" not in lower and
+                                              "location tbd" not in lower))
 
         matrix_device = self.hardware_map.device_for_signal("tof.8x8")
         if matrix_device and matrix_device.kind == "tof_8x8":
